@@ -1,0 +1,186 @@
+# Manual end-to-end run of the Hydration treasury sweep:
+#   generate the referendum calls -> polkadot-referenda-tester forks Asset Hub (+ Collectives for the
+#   whitelisted track) + Hydration + the relay on Chopsticks, creates and executes the referenda ->
+#   post-tests/sweep.ts drives the scheduled sweeps and asserts the outcome.
+#
+# The exact generated calls and the post-test results are printed in the job summary, and the full
+# log + out/ artifacts are uploaded.
+#
+# Uses github.com/karolk91/polkadot-referenda-tester (default ref: feat/post-test-hook, the branch
+# with the --post-test hook). If that repo is private, add a read PAT as the PRT_TOKEN secret.
+name: e2e
+
+on:
+  workflow_dispatch:
+    inputs:
+      track:
+        description: "Referendum track"
+        type: choice
+        options: [root, whitelisted-caller]
+        default: root
+      executions:
+        description: "Sweeps to drive: 0 = enactment checks only, N, or 'all' (full schedule + margin + completion)"
+        type: string
+        default: "2"
+      prefund_sovereign_dot:
+        description: "Pre-fund the sovereign with this much DOT via storage override (empty = use its existing DOT; add --top-up-dot via generator_args for a top-up leg)"
+        type: string
+        default: ""
+      fee_budget_dot:
+        description: "DOT withdrawn per execution for Hydration XCM fees (surplus is refunded)"
+        type: string
+        default: "0.02"
+      sweep_override:
+        description: "Reduced sweep: override BOTH the holder's USDT and USDC to this amount (fast drain/margin testing; requires prefund)"
+        type: string
+        default: ""
+      extra_executions:
+        description: "Margin executions beyond the needed ones (empty = generator default)"
+        type: string
+        default: ""
+      generator_args:
+        description: "Extra flags for the call generator, e.g. --max-footprint 0.1 --interval-hours 2"
+        type: string
+        default: ""
+      use_subway:
+        description: "Front the public RPC endpoints with local subway proxies (caching + failover; ~5 min extra on cache miss)"
+        type: boolean
+        default: false
+      prt_ref:
+        description: "polkadot-referenda-tester git ref"
+        type: string
+        default: feat/post-test-hook
+
+run-name: "e2e: ${{ inputs.track }}, executions=${{ inputs.executions }}${{ inputs.prefund_sovereign_dot != '' && format(', prefund={0} DOT', inputs.prefund_sovereign_dot) || '' }}${{ inputs.sweep_override != '' && format(', sweep={0}', inputs.sweep_override) || '' }}"
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout polkadot-referenda-tester (${{ inputs.prt_ref }})
+        uses: actions/checkout@v4
+        with:
+          repository: karolk91/polkadot-referenda-tester
+          ref: ${{ inputs.prt_ref }}
+          path: prt
+          token: ${{ secrets.PRT_TOKEN || github.token }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install & build polkadot-referenda-tester
+        working-directory: prt
+        run: |
+          corepack enable
+          yarn install --immutable
+          yarn build
+          test -f dist/cli.js
+
+      - name: Install (generates PAPI descriptors from .papi metadata)
+        run: npm ci
+
+      - name: Cache subway binary
+        if: ${{ inputs.use_subway }}
+        id: subway-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/subway
+          key: subway-${{ runner.os }}-v0.1.2
+
+      - name: Install subway
+        if: ${{ inputs.use_subway && steps.subway-cache.outputs.cache-hit != 'true' }}
+        run: |
+          if ! command -v cargo >/dev/null; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            . "$HOME/.cargo/env"
+          fi
+          cargo install --git https://github.com/AcalaNetwork/subway --locked
+
+      - name: Run e2e
+        env:
+          PRT_DIR: ${{ github.workspace }}/prt
+          TRACK: ${{ inputs.track }}
+          EXECUTIONS: ${{ inputs.executions }}
+          PREFUND_SOVEREIGN_DOT: ${{ inputs.prefund_sovereign_dot }}
+          FEE_BUDGET_DOT: ${{ inputs.fee_budget_dot }}
+          SWEEP_USDT: ${{ inputs.sweep_override }}
+          SWEEP_USDC: ${{ inputs.sweep_override }}
+          EXTRA_EXECUTIONS: ${{ inputs.extra_executions }}
+          GEN_EXTRA_ARGS: ${{ inputs.generator_args }}
+          USE_SUBWAY: ${{ inputs.use_subway && '1' || '0' }}
+          NODE_NO_WARNINGS: "1"
+        run: bash scripts/e2e.sh 2>&1 | tee e2e.log
+
+      - name: Job summary (exact calls + results)
+        if: always()
+        run: |
+          {
+            echo "## Hydration treasury sweep e2e"
+            echo
+            echo "| parameter | value |"
+            echo "|---|---|"
+            echo "| track | \`${{ inputs.track }}\` |"
+            echo "| executions | \`${{ inputs.executions }}\` |"
+            echo "| prefund sovereign | \`${{ inputs.prefund_sovereign_dot || '(none)' }}\` |"
+            echo "| fee budget / msg | \`${{ inputs.fee_budget_dot }}\` DOT |"
+            echo "| sweep override | \`${{ inputs.sweep_override || '(live balances)' }}\` |"
+            echo "| extra executions | \`${{ inputs.extra_executions || '(default)' }}\` |"
+            echo "| generator args | \`${{ inputs.generator_args || '(none)' }}\` |"
+            echo "| subway | \`${{ inputs.use_subway }}\` |"
+            echo "| prt ref | \`${{ inputs.prt_ref }}\` |"
+            echo
+
+            if [ -f out/summary.json ]; then
+              echo "### Plan"
+              echo '```json'
+              jq '{track, enactment, holder, beneficiary,
+                   amounts: [.amounts[] | {symbol, total: .formatted}],
+                   plan, fees, schedulerTask, proposalHash: .proposal.hash,
+                   publicReferendum}' out/summary.json
+              echo '```'
+              echo
+            fi
+
+            if ls out/*.call >/dev/null 2>&1; then
+              echo "### Exact calls"
+              echo
+              echo "The preimage + referendum submissions below are exactly what was handed to the tester;"
+              echo "batches are the single-extrinsic convenience form."
+              echo
+              for f in out/*.call; do
+                echo "<details><summary><code>$(basename "$f")</code> ($(( $(wc -c < "$f") / 2 )) bytes)</summary>"
+                echo
+                echo '```'
+                cat "$f"
+                echo '```'
+                echo "</details>"
+              done
+              echo
+            fi
+
+            echo "### Result"
+            echo '```'
+            grep -aE "Fellowship referendum #[0-9]+ (created|executed)|Governance referendum #[0-9]+ (created|executed)|\[post-test\]|holder drained after|executions run|margin runs|treasury gained|holder dropped|holder left|peak breaker|schedule complete|all assertions passed|Post-referendum test passed|Workflow completed|AssertionError|Error:" e2e.log \
+              | grep -avE "building #" | tail -40 || echo "(no result lines — see the uploaded log)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-${{ inputs.track }}-${{ github.run_number }}
+          path: |
+            e2e.log
+            out/
+            hydration-prefund.gen.yml
+          if-no-files-found: ignore
+          retention-days: 14

@@ -1,0 +1,36 @@
+{
+	"name": "opengov-hydration-treasury-sweep",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Generates the OpenGov calls (Root or Whitelisted Caller track) for a Polkadot referendum that sweeps the USDT/USDC held on Hydration to the Polkadot Asset Hub treasury.",
+	"type": "module",
+	"license": "MIT",
+	"engines": {
+		"node": ">=22"
+	},
+	"scripts": {
+		"postinstall": "papi",
+		"papi:update": "papi update",
+		"start": "tsx src/main.ts",
+		"breaker-history": "tsx src/breakerHistory.ts",
+		"test:e2e": "bash scripts/e2e.sh",
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check .",
+		"lint:fix": "biome check --write .",
+		"format": "biome format --write .",
+		"test": "tsx --test src/*.test.ts",
+		"check": "npm run typecheck && npm run lint && npm run test"
+	},
+	"dependencies": {
+		"@polkadot-api/descriptors": "file:.papi/descriptors",
+		"@polkadot-api/substrate-bindings": "^0.21.0",
+		"polkadot-api": "^3.0.0"
+	},
+	"devDependencies": {
+		"@acala-network/chopsticks": "^1.5.1",
+		"@biomejs/biome": "^2.5.10",
+		"@types/node": "^24.13.3",
+		"tsx": "^4.23.12",
+		"typescript": "^5.9.3"
+	}
+}

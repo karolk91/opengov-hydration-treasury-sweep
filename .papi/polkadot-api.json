@@ -1,0 +1,24 @@
+{
+  "version": 0,
+  "descriptorPath": ".papi/descriptors",
+  "entries": {
+    "ahp": {
+      "wsUrl": "wss://polkadot-asset-hub-rpc.polkadot.io",
+      "metadata": ".papi/metadata/ahp.scale",
+      "genesis": "0x68d56f15f85d3136970ec16946040bc1752654e906147f7e43e9d539d7c3de2f",
+      "codeHash": "0x80019b852cb8dbd47f5c13dc9a56eb5a30b9d68440d681e9959ecd25f3751de9"
+    },
+    "collectives": {
+      "wsUrl": "wss://polkadot-collectives-rpc.polkadot.io",
+      "metadata": ".papi/metadata/collectives.scale",
+      "genesis": "0x46ee89aa2eedd13e988962630ec9fb7565964cf5023bb351f2b6b25c1b68b0b2",
+      "codeHash": "0x7255b953db8dccc0e53ad6f045277c2497a1e1fba9e021a114d5cf5c3e68eb10"
+    },
+    "hydration": {
+      "wsUrl": "wss://hydration-rpc.n.dwellir.com",
+      "metadata": ".papi/metadata/hydration.scale",
+      "genesis": "0xafdc188f45c71dacbaa0b62e16a91f726c7b8699a9748cdf715459de6b7f366d",
+      "codeHash": "0xd3b64a653eac65e5d5b1e948e21dce151b980d1779baa63e78418e18c3e3f1fe"
+    }
+  }
+}
