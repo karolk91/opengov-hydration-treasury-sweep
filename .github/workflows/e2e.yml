@@ -117,6 +117,8 @@ jobs:
           GEN_EXTRA_ARGS: ${{ inputs.generator_args }}
           USE_SUBWAY: ${{ inputs.use_subway && '1' || '0' }}
           NODE_NO_WARNINGS: "1"
+        # `shell: bash` runs with `-o pipefail`, so a failing e2e is not masked by `tee`.
+        shell: bash
         run: bash scripts/e2e.sh 2>&1 | tee e2e.log
 
       - name: Job summary (exact calls + results)
