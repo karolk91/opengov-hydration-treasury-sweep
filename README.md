@@ -93,6 +93,8 @@ Environment knobs (`scripts/e2e.sh`):
 - `SWEEP_USDT=<amt> SWEEP_USDC=<amt>`: reduced sweep: override the holder's balances in the fork so
   a full run empties the holder in a few executions (fast drain/margin/completion testing; requires prefund).
 - `EXTRA_EXECUTIONS=<n>`, `GEN_EXTRA_ARGS="--flag …"`: forwarded to the generator.
+- `BLOCK_DETAILS=0|1` (default 1): print every built block on both forks with its events (block
+  number, hash, and each event's pallet.variant + payload).
 - `USE_SUBWAY=0|1` (default 1): front the public endpoints with local
   [subway](https://github.com/AcalaNetwork/subway) proxies (caching + failover, `scripts/subway.sh`,
   ports 9011–9013); requires `cargo install --git https://github.com/AcalaNetwork/subway --locked`,

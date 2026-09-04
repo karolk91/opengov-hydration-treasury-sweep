@@ -33,6 +33,8 @@ TRACK="${TRACK:-root}"
 PREFUND_SOVEREIGN_DOT="${PREFUND_SOVEREIGN_DOT:-}"
 # Per-message DOT fee budget (WithdrawAsset/BuyExecution); over-budgeting is free (surplus refunded).
 FEE_BUDGET_DOT="${FEE_BUDGET_DOT:-0.02}"
+# Print every built block on both forks with its events; 0 turns it off.
+BLOCK_DETAILS="${BLOCK_DETAILS:-1}"
 
 # Put local subway RPC proxies (caching + failover) in front of the public nodes so the
 # tester's repeated Chopsticks forks hit a warm local cache and survive a flaky upstream.
@@ -113,7 +115,7 @@ CMD=(node "$PRT_DIR/dist/cli.js" test
   --call-to-note-preimage-for-governance-referendum "$PREIMAGE"
   --call-to-create-governance-referendum "$SUBMIT"
   --post-test "$(pwd)/post-tests/sweep.ts"
-  --post-test-args "{\"executions\":$EXECUTIONS,\"outDir\":\"$(pwd)/out\"}"
+  --post-test-args "{\"executions\":$EXECUTIONS,\"outDir\":\"$(pwd)/out\",\"blockDetails\":$BLOCK_DETAILS}"
   --verbose)
 
 if [ "$TRACK" = "whitelisted-caller" ]; then

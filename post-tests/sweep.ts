@@ -33,6 +33,8 @@ interface Blockchain {
 		unsafeBlockHeight?: number
 		relayChainStateOverrides?: Array<[string, string]>
 	}): Promise<unknown>
+	/** Latest block of the fork; present on the real chopsticks object. */
+	head?: { hash: string; number: number }
 }
 
 interface PostTestChain {
@@ -123,7 +125,11 @@ interface Chain {
 	/** Live chopsticks-core Blockchain, for in-process block building + storage writes. */
 	bc: Blockchain
 	slotMs: number
+	label: string
 }
+
+/** Print every built block with its events; disabled with `--post-test-args '{"blockDetails":0}'`. */
+let showBlockDetails = true
 
 /** Reject if a promise takes longer than `ms` — a Chopsticks build can occasionally wedge. */
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -140,12 +146,13 @@ async function connect(meta: PostTestChain): Promise<Chain> {
 	const client = createClient(getWsProvider(meta.wsEndpoint))
 	const api = client.getUnsafeApi() as unknown as AnyApi
 	const slotMs = Number(await api.constants.Aura.SlotDuration())
-	return { client, api, bc: meta.chain as Blockchain, slotMs }
+	return { client, api, bc: meta.chain as Blockchain, slotMs, label: meta.label }
 }
 
 /** Build one block in-process (so connectParachains relays HRMP), then let the ws reader catch up. */
 async function build(chain: Chain): Promise<void> {
 	await withTimeout(chain.bc.newBlock(), OP_TIMEOUT_MS, "newBlock")
+	if (showBlockDetails) await printBlockDetails(chain)
 }
 
 function encodeU64Le(v: bigint): string {
@@ -180,6 +187,7 @@ async function advanceTime(chain: Chain, deltaMs: number): Promise<void> {
 		OP_TIMEOUT_MS,
 		"newBlock(advanceTime)",
 	)
+	if (showBlockDetails) await printBlockDetails(chain)
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: chopsticks setStorage takes its own StorageValues shape.
@@ -205,6 +213,32 @@ async function ourDispatch(ah: Chain, taskId: string): Promise<{ result: unknown
 
 const jsonSafe = (v: unknown) =>
 	JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x))
+
+/**
+ * Print the latest block of a fork with every event in it (pallet.variant plus a truncated
+ * payload). `build`/`advanceTime` call this after each block, so with `blockDetails` on (the
+ * default) the log shows every built block on both forks.
+ */
+async function printBlockDetails(chain: Chain): Promise<void> {
+	const head = chain.bc.head
+	const number = head?.number ?? Number(await chain.api.query.System.Number.getValue())
+	const events = (await chain.api.query.System.Events.getValue()) as Array<{
+		phase: { type: string; value?: unknown }
+		event: { type: string; value: { type: string; value: unknown } }
+	}>
+	const hash = head?.hash ? ` ${head.hash}` : ""
+	console.log(
+		`  ┌ ${chain.label} block #${number.toLocaleString("en-US")}${hash} (${events.length} events)`,
+	)
+	for (const { phase, event } of events) {
+		const origin =
+			phase?.type === "ApplyExtrinsic" ? `ext#${phase.value}` : (phase?.type ?? "?").toLowerCase()
+		const payload = jsonSafe(event.value.value) ?? ""
+		const shown = payload.length > 140 ? `${payload.slice(0, 140)}…` : payload
+		console.log(`  │  [${origin}] ${event.type}.${event.value.type}${shown ? ` ${shown}` : ""}`)
+	}
+	console.log("  └")
+}
 
 /**
  * Relocate our named periodic task to the current relay block and build until it dispatches. Setting
@@ -317,6 +351,7 @@ export default async function sweepPostTest(ctx: PostTestContext): Promise<void>
 	}
 	const maxExecutions = argNum("executions", 3)
 	const maxBreakerPct = argNum("maxBreakerPct", 20)
+	showBlockDetails = argNum("blockDetails", 1) !== 0
 	const summary: Summary = JSON.parse(readFileSync(join(outDir, "summary.json"), "utf-8"))
 
 	const find = (needle: string) =>
@@ -490,14 +525,10 @@ export default async function sweepPostTest(ctx: PostTestContext): Promise<void>
 				outcome = await proxyOutcome(hyd)
 			}
 			if (!outcome.ok) {
-				// The failure message includes whether the message arrived at all and what the latest
-				// Hydration block contained.
-				const events = (await hyd.api.query.System.Events.getValue()) as Array<{
-					event: { type: string; value: { type: string } }
-				}>
-				const names = events.map((e) => `${e.event.type}.${e.event.value.type}`).join(", ")
+				// The blocks above are already printed with their events when blockDetails is on.
+				if (!showBlockDetails) await printBlockDetails(hyd)
 				assert.fail(
-					`execution ${k}: proxied XTokens transfer ${outcome.seen ? "FAILED on Hydration" : "never executed on Hydration (message not delivered?)"}: ${outcome.error}; latest Hydration block events: [${names}]`,
+					`execution ${k}: proxied XTokens transfer ${outcome.seen ? "FAILED on Hydration" : "never executed on Hydration (message not delivered?)"}: ${outcome.error}`,
 				)
 			}
 

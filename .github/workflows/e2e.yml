@@ -42,6 +42,10 @@ on:
         description: "Extra flags for the call generator, e.g. --max-footprint 0.1 --interval-hours 2"
         type: string
         default: ""
+      block_details:
+        description: "Print every built block with its events on both forks (0 = off)"
+        type: string
+        default: "1"
       use_subway:
         description: "Front the public RPC endpoints with local subway proxies (caching + failover; ~5 min extra on cache miss)"
         type: boolean
@@ -56,7 +60,9 @@ run-name: "e2e: ${{ inputs.track }}, executions=${{ inputs.executions }}${{ inpu
 jobs:
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    # A full sweep is ~1.5-3 h on the 4-vCPU runner (single-thread WASM block building);
+    # the platform caps a hosted job at 6 h.
+    timeout-minutes: 330
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -114,6 +120,7 @@ jobs:
           SWEEP_USDT: ${{ inputs.sweep_override }}
           SWEEP_USDC: ${{ inputs.sweep_override }}
           EXTRA_EXECUTIONS: ${{ inputs.extra_executions }}
+          BLOCK_DETAILS: ${{ inputs.block_details }}
           GEN_EXTRA_ARGS: ${{ inputs.generator_args }}
           USE_SUBWAY: ${{ inputs.use_subway && '1' || '0' }}
           NODE_NO_WARNINGS: "1"
