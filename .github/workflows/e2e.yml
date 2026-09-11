@@ -3,6 +3,11 @@ name: e2e
 on:
   workflow_dispatch:
     inputs:
+      track:
+        description: "Referendum track: root, or whitelisted-caller (adds a Fellowship whitelist referendum on Collectives)"
+        type: choice
+        options: [root, whitelisted-caller]
+        default: root
       executions:
         description: "Sweeps to drive: 'once' fires each sweep once; a number N drives the chunked sweep N times on live balances; 'all' drives it to full drain (pair with reduce_chunked_to)"
         type: string
@@ -28,7 +33,7 @@ on:
         type: string
         default: feat/post-test-hook
 
-run-name: "e2e: executions=${{ inputs.executions }}${{ inputs.enact_block != '' && format(', enact@{0}', inputs.enact_block) || '' }}${{ inputs.reduce_chunked_to != '' && format(', reduce={0}', inputs.reduce_chunked_to) || '' }}"
+run-name: "e2e: ${{ inputs.track }}, executions=${{ inputs.executions }}${{ inputs.enact_block != '' && format(', enact@{0}', inputs.enact_block) || '' }}${{ inputs.reduce_chunked_to != '' && format(', reduce={0}', inputs.reduce_chunked_to) || '' }}"
 
 jobs:
   e2e:
@@ -84,6 +89,7 @@ jobs:
       - name: Run e2e
         env:
           PRT_DIR: ${{ github.workspace }}/prt
+          TRACK: ${{ inputs.track }}
           EXECUTIONS: ${{ inputs.executions }}
           ENACT_BLOCK: ${{ inputs.enact_block }}
           REDUCE_CHUNKED_TO: ${{ inputs.reduce_chunked_to }}
@@ -101,6 +107,7 @@ jobs:
             echo
             echo "| parameter | value |"
             echo "|---|---|"
+            echo "| track | \`${{ inputs.track }}\` |"
             echo "| executions | \`${{ inputs.executions }}\` |"
             echo "| enact block | \`${{ inputs.enact_block || '(auto off-grid)' }}\` |"
             echo "| reduce chunked to | \`${{ inputs.reduce_chunked_to || '(live balances)' }}\` |"
@@ -111,7 +118,7 @@ jobs:
             if [ -f out/summary-all.json ]; then
               echo "### Consolidation plan (decoded live)"
               echo '```json'
-              jq '{beneficiary, delegateToAdd, enactAtBlock, sovereignAccountOnHydration,
+              jq '{track, beneficiary, delegateToAdd, enactAtBlock, sovereignAccountOnHydration,
                    tasks: [.tasks[] | {ref, mode, holder: .holder[0:8], addProxy,
                                        cancel: {when: .cancel.when, index: .cancel.index},
                                        needed: .plan.needed,
@@ -126,7 +133,7 @@ jobs:
               echo
               echo "The preimage + referendum submission below are exactly what was handed to the tester."
               echo
-              for f in out/all-preimage.call out/all-submit.call; do
+              for f in out/all-*.call; do
                 [ -f "$f" ] || continue
                 echo "<details><summary><code>$(basename "$f")</code> ($(( $(wc -c < "$f") / 2 )) bytes)</summary>"
                 echo
@@ -140,7 +147,7 @@ jobs:
 
             echo "### Result"
             echo '```'
-            grep -aE "Governance referendum #[0-9]+ (created|executed)|BatchCompleted|\[all\]|delegates:|old .* gone=|new .* present=|fired:|already fired|holder drained|treasury gained|Post-referendum test passed|Workflow completed|AssertionError|Error:" e2e.log \
+            grep -aE "Fellowship referendum #[0-9]+ (created|executed)|Governance referendum #[0-9]+ (created|executed)|BatchCompleted|\[all\]|delegates:|old .* gone=|new .* present=|fired:|already fired|holder drained|treasury gained|Post-referendum test passed|Workflow completed|AssertionError|Error:" e2e.log \
               | grep -avE "building #" | tail -60 || echo "(no result lines — see the uploaded log)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

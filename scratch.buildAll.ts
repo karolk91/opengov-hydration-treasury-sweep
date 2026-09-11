@@ -63,6 +63,14 @@ const PLAN_FOR: Record<string, { ref: string; mode: "chunked" | "single" | "left
 	"471f9236": { ref: "1104", mode: "single" },
 }
 
+const track = ((): "root" | "whitelisted-caller" => {
+	const i = process.argv.indexOf("--track")
+	const value = i >= 0 ? (process.argv[i + 1] ?? "root") : "root"
+	if (value !== "root" && value !== "whitelisted-caller")
+		throw new Error(`--track must be root or whitelisted-caller, was "${value}"`)
+	return value
+})()
+
 const offline = await getOfflineApis()
 const endpointList = (override: string | undefined, fallback: readonly string[]): string[] =>
 	override ? [override] : [...fallback]
@@ -354,7 +362,7 @@ console.log(
 const ref = buildReferendumCalls(
 	{ assetHub: offline.assetHub, collectives: offline.collectives },
 	batch,
-	"root",
+	track,
 	enactment,
 )
 writeFileSync("out/all-preimage.call", toHex(ref.preimageForPublicReferendum.encodedData))
@@ -363,6 +371,7 @@ writeFileSync(
 	"out/summary-all.json",
 	JSON.stringify(
 		{
+			track: ref.track,
 			sovereignAccountOnHydration: sovereign.ss58,
 			beneficiary: toSs58(beneficiaryKey, POLKADOT_SS58_PREFIX),
 			delegateToAdd: AH_SOVEREIGN_PUBKEY_HEX,
@@ -373,10 +382,27 @@ writeFileSync(
 		2,
 	),
 )
+console.log(`\ntrack: ${ref.track}`)
 console.log(
-	`\nwrote out/all-preimage.call (${ref.preimageForPublicReferendum.length}B, hash ${ref.preimageForPublicReferendum.hash})`,
+	`wrote out/all-preimage.call (${ref.preimageForPublicReferendum.length}B, hash ${ref.preimageForPublicReferendum.hash})`,
 )
 console.log(`wrote out/all-submit.call (${ref.publicReferendumSubmission.length}B)`)
+if (ref.track === "whitelisted-caller" && ref.fellowshipReferendumSubmission) {
+	writeFileSync(
+		"out/all-fellowship-submit.call",
+		toHex(ref.fellowshipReferendumSubmission.encodedData),
+	)
+	console.log(
+		`wrote out/all-fellowship-submit.call (${ref.fellowshipReferendumSubmission.length}B)`,
+	)
+	if (ref.preimageForWhitelistCall) {
+		writeFileSync(
+			"out/all-fellowship-preimage.call",
+			toHex(ref.preimageForWhitelistCall.encodedData),
+		)
+		console.log(`wrote out/all-fellowship-preimage.call (${ref.preimageForWhitelistCall.length}B)`)
+	}
+}
 console.log("wrote out/summary-all.json")
 
 if (cancelAtBlock !== undefined) {

@@ -6,6 +6,8 @@ PRT_DIR="${PRT_DIR:-$HOME/Dev/karolk91/polkadot-referenda-tester-prod}"
 AH_WS="${AH_WS:-wss://polkadot-asset-hub-rpc.polkadot.io}"
 HYDRATION_WS="${HYDRATION_WS:-wss://hydration-rpc.n.dwellir.com}"
 RELAY_WS="${RELAY_WS:-wss://rpc.polkadot.io}"
+COLLECTIVES_WS="${COLLECTIVES_WS:-wss://polkadot-collectives-rpc.polkadot.io}"
+TRACK="${TRACK:-root}"
 
 ENACT_BLOCK="${ENACT_BLOCK:-}"
 ENACT_OFFSET="${ENACT_OFFSET:-100000}"
@@ -41,8 +43,10 @@ else
   BUILD_ARGS+=(--enact-offset "$ENACT_OFFSET")
 fi
 [ -n "$REDUCE_CHUNKED_TO" ] && BUILD_ARGS+=(--reduce-chunked "$REDUCE_CHUNKED_TO")
+BUILD_ARGS+=(--track "$TRACK")
 
 mkdir -p out
+rm -f out/all-*.call out/all-ah-sim.yml out/hyd-reduce.yml
 echo "== 1. building the consolidation referendum (${BUILD_ARGS[*]}) =="
 npx tsx scratch.buildAll.ts "${BUILD_ARGS[@]}"
 test -f out/all-ah-sim.yml || { echo "builder did not emit out/all-ah-sim.yml" >&2; exit 1; }
@@ -58,12 +62,22 @@ fi
 ADDITIONAL="$HYD_ENTRY"
 [ -n "$RELAY_WS" ] && ADDITIONAL="$HYD_ENTRY,$RELAY_WS"
 
-echo "== 2+3. executing via referenda-tester + post-test (executions: $EXECUTIONS; additional-chains: $ADDITIONAL) =="
-node "$PRT_DIR/dist/cli.js" test \
-  --governance-chain-url "$(pwd)/out/all-ah-sim.yml" \
-  --additional-chains "$ADDITIONAL" \
-  --call-to-note-preimage-for-governance-referendum "$PREIMAGE" \
-  --call-to-create-governance-referendum "$SUBMIT" \
-  --post-test "$(pwd)/post-tests/all.ts" \
-  --post-test-args "{\"executions\":\"$EXECUTIONS\",\"outDir\":\"$(pwd)/out\",\"blockDetails\":$BLOCK_DETAILS}" \
-  --verbose
+CMD=(node "$PRT_DIR/dist/cli.js" test
+  --governance-chain-url "$(pwd)/out/all-ah-sim.yml"
+  --additional-chains "$ADDITIONAL"
+  --call-to-note-preimage-for-governance-referendum "$PREIMAGE"
+  --call-to-create-governance-referendum "$SUBMIT"
+  --post-test "$(pwd)/post-tests/all.ts"
+  --post-test-args "{\"executions\":\"$EXECUTIONS\",\"outDir\":\"$(pwd)/out\",\"blockDetails\":$BLOCK_DETAILS}"
+  --verbose)
+
+if [ "$TRACK" = "whitelisted-caller" ]; then
+  test -f out/all-fellowship-submit.call || { echo "track=whitelisted-caller but out/all-fellowship-submit.call missing" >&2; exit 1; }
+  CMD+=(--fellowship-chain-url "$COLLECTIVES_WS"
+        --call-to-create-fellowship-referendum "$(tr -d '[:space:]' < out/all-fellowship-submit.call)")
+  [ -f out/all-fellowship-preimage.call ] &&
+    CMD+=(--call-to-note-preimage-for-fellowship-referendum "$(tr -d '[:space:]' < out/all-fellowship-preimage.call)")
+fi
+
+echo "== 2+3. executing via referenda-tester + post-test (track: $TRACK; executions: $EXECUTIONS; additional-chains: $ADDITIONAL) =="
+"${CMD[@]}"
