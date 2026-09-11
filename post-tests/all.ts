@@ -2,242 +2,243 @@ import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { AccountId } from "@polkadot-api/substrate-bindings"
-import { createClient, type PolkadotClient } from "polkadot-api"
-import { getWsProvider } from "polkadot-api/ws"
-import { advanceTime, fireScheduledTask, setBlockDetails } from "./sweep.ts"
+import { HYDRATION_SS58_PREFIX } from "../src/config.ts"
+import { hexToBytes, hexWithoutPrefix } from "../src/hex.ts"
+import { isRecord } from "../src/verify.ts"
+import {
+	type Any,
+	advanceTime,
+	build,
+	connect,
+	field,
+	fireScheduledTask,
+	type PostTestContext,
+	setBlockDetails,
+} from "./chopsticks.ts"
 
-// biome-ignore lint/suspicious/noExplicitAny: getUnsafeApi() is untyped.
-type Any = any
-interface Blockchain {
-	newBlock(p?: Record<string, unknown>): Promise<unknown>
-	head?: { number: number }
+const USDT_ASSET_HUB = 1984
+const USDC_ASSET_HUB = 1337
+const USDT_HYDRATION = 10
+const USDC_HYDRATION = 22
+
+interface HolderBalances {
+	usdt: bigint
+	usdc: bigint
 }
-interface PostTestChain {
-	label: string
-	specName: string
-	kind?: string
-	wsEndpoint: string
-	chain: unknown
-}
-interface PostTestContext {
-	main: PostTestChain
-	chains: PostTestChain[]
-	args: unknown
-}
-interface Chain {
-	client: PolkadotClient
-	api: Any
-	bc: Blockchain
-	label: string
-	slotMs: number
+interface Snapshot {
+	treasuryUsdt: bigint
+	treasuryUsdc: bigint
+	holders: Record<string, HolderBalances>
 }
 
-const OP_TIMEOUT_MS = 300_000
-const USDT_AH = 1984
-const USDC_AH = 1337
-const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null
-const hx = (v: Any): string =>
-	v == null
-		? ""
-		: typeof v === "string"
-			? v.replace(/^0x/, "")
-			: typeof v.asHex === "function"
-				? v.asHex().replace(/^0x/, "")
-				: v instanceof Uint8Array
-					? Buffer.from(v).toString("hex")
-					: ""
-const field = (o: Any, ...names: string[]) => {
-	for (const n of names) if (o?.[n] !== undefined) return o[n]
-	return undefined
+const pubkeyToHydration = (pubkeyHex: string) =>
+	AccountId(HYDRATION_SS58_PREFIX).dec(hexToBytes(pubkeyHex))
+const holderBalancesOf = (snapshot: Snapshot, ref: string): HolderBalances => {
+	const balances = snapshot.holders[ref]
+	if (!balances) throw new Error(`no balances recorded for #${ref}`)
+	return balances
 }
-const pubToHyd = (pubHex: string) => AccountId(63).dec(Uint8Array.from(Buffer.from(pubHex, "hex")))
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-	return Promise.race([
-		p,
-		new Promise<T>((_, r) => setTimeout(() => r(new Error(`timeout ${label}`)), ms).unref()),
-	])
-}
-async function connect(meta: PostTestChain): Promise<Chain> {
-	const client = createClient(getWsProvider(meta.wsEndpoint))
-	const api = client.getUnsafeApi() as Any
-	let slotMs = 6000
-	try {
-		slotMs = Number(await api.constants.Aura.SlotDuration())
-	} catch {
-		slotMs = 6000
-	}
-	return { client, api, bc: meta.chain as Blockchain, label: meta.label, slotMs }
-}
-const build = (c: Chain) => withTimeout(c.bc.newBlock(), OP_TIMEOUT_MS, `newBlock ${c.label}`)
 
 export default async function all(ctx: PostTestContext): Promise<void> {
 	const outDir =
 		(isRecord(ctx.args) && typeof ctx.args.outDir === "string" && ctx.args.outDir) || "out"
 	if (isRecord(ctx.args) && Number(ctx.args.blockDetails) === 0) setBlockDetails(false)
-	const s = JSON.parse(readFileSync(join(outDir, "summary-all.json"), "utf-8"))
-	const beneficiary: string = s.beneficiary
-	const delegate = String(s.delegateToAdd).toLowerCase()
-	const tasks: Any[] = s.tasks
+	const summary = JSON.parse(readFileSync(join(outDir, "summary-all.json"), "utf-8"))
+	const beneficiary: string = summary.beneficiary
+	const delegatePubkey = String(summary.delegateToAdd).toLowerCase()
+	const tasks: Any[] = summary.tasks
+	const firstTask = tasks[0]
+	if (!firstTask) throw new Error("summary-all.json lists no tasks")
 
-	const find = (n: string) =>
-		ctx.chains.find((c) => c.specName?.includes(n) || c.label.toLowerCase().includes(n))
-	const ah = await connect(find("asset-hub") ?? find("statemint") ?? ctx.main)
-	const hydMeta = find("hydr")
+	const find = (needle: string) =>
+		ctx.chains.find(
+			(chain) => chain.specName?.includes(needle) || chain.label.toLowerCase().includes(needle),
+		)
+	const assetHub = await connect(find("asset-hub") ?? find("statemint") ?? ctx.main)
+	const hydrationMeta = find("hydr")
 	const relayMeta =
-		ctx.chains.find((c) => c.kind === "relay") ?? ctx.chains.find((c) => c.specName === "polkadot")
-	assert.ok(hydMeta && relayMeta, "need Hydration + relay among --additional-chains")
-	const hyd = await connect(hydMeta)
+		ctx.chains.find((chain) => chain.kind === "relay") ??
+		ctx.chains.find((chain) => chain.specName === "polkadot")
+	assert.ok(hydrationMeta && relayMeta, "need Hydration + relay among --additional-chains")
+	const hydration = await connect(hydrationMeta)
 	const relay = await connect(relayMeta)
 	try {
-		const delegatesOf = async (holderPubHex: string): Promise<string[]> => {
-			const res = (await hyd.api.query.Proxy.Proxies.getValue(pubToHyd(holderPubHex))) as unknown
-			const list = Array.isArray(res) ? (res[0] as Any[]) : []
-			return (list ?? []).map((d: Any) =>
-				hx(typeof d.delegate === "string" ? AccountId(63).enc(d.delegate) : d.delegate),
+		const delegatesOf = async (holderPubkeyHex: string): Promise<string[]> => {
+			const proxies = (await hydration.api.query.Proxy.Proxies.getValue(
+				pubkeyToHydration(holderPubkeyHex),
+			)) as unknown
+			const definitions = Array.isArray(proxies) ? (proxies[0] as Any[]) : []
+			return (definitions ?? []).map((definition: Any) =>
+				hexWithoutPrefix(
+					typeof definition.delegate === "string"
+						? AccountId(HYDRATION_SS58_PREFIX).enc(definition.delegate)
+						: definition.delegate,
+				),
 			)
 		}
 
-		const needProxy = tasks.filter((t) => t.addProxy)
-		console.log(`\n[all] driving ${needProxy.length} add-proxy XCM(s) to Hydration`)
-		const pending = new Set(needProxy.map((t) => t.holder))
+		const tasksNeedingProxy = tasks.filter((task) => task.addProxy)
+		console.log(`\n[all] driving ${tasksNeedingProxy.length} add-proxy XCM(s) to Hydration`)
+		const pending = new Set<string>(tasksNeedingProxy.map((task) => task.holder))
 		for (let round = 0; round < 16 && pending.size > 0; round++) {
 			await build(relay)
-			await build(hyd)
-			for (const t of needProxy) {
-				if (pending.has(t.holder) && (await delegatesOf(t.holder)).includes(delegate))
-					pending.delete(t.holder)
+			await build(hydration)
+			for (const task of tasksNeedingProxy) {
+				if (pending.has(task.holder) && (await delegatesOf(task.holder)).includes(delegatePubkey))
+					pending.delete(task.holder)
 			}
 		}
-		for (const t of needProxy) {
-			const dels = await delegatesOf(t.holder)
+		for (const task of tasksNeedingProxy) {
+			const delegates = await delegatesOf(task.holder)
 			console.log(
-				`  #${t.ref} ${t.holder.slice(0, 8)} delegates: [${dels.map((d) => d.slice(0, 8)).join(", ")}]`,
+				`  #${task.ref} ${task.holder.slice(0, 8)} delegates: [${delegates.map((delegate) => delegate.slice(0, 8)).join(", ")}]`,
 			)
 			assert.ok(
-				dels.includes(delegate),
-				`#${t.ref}: AH-sov delegate not added to ${t.holder.slice(0, 8)}`,
+				delegates.includes(delegatePubkey),
+				`#${task.ref}: AH-sov delegate not added to ${task.holder.slice(0, 8)}`,
 			)
 		}
 
 		console.log("\n[all] checking the Asset Hub scheduler")
-		const entries = await ah.api.query.Scheduler.Agenda.getEntries()
-		const oldHashes = new Set<string>()
-		const newIds = new Set<string>()
-		for (const e of entries)
-			for (const it of (e.value ?? []) as Any[]) {
-				if (it?.call?.type === "Lookup") oldHashes.add(hx(it.call.value.hash).slice(0, 8))
-				const id = hx(field(it, "maybe_id", "maybeId"))
-				if (id) newIds.add(id)
+		const entries = await assetHub.api.query.Scheduler.Agenda.getEntries()
+		const legacyHashPrefixes = new Set<string>()
+		const taskIds = new Set<string>()
+		for (const entry of entries)
+			for (const item of (entry.value ?? []) as Any[]) {
+				if (item?.call?.type === "Lookup")
+					legacyHashPrefixes.add(hexWithoutPrefix(item.call.value.hash).slice(0, 8))
+				const id = hexWithoutPrefix(field(item, "maybe_id", "maybeId"))
+				if (id) taskIds.add(id)
 			}
-		for (const t of tasks) {
-			const oldGone = !oldHashes.has(String(t.oldPreimagePrefix))
-			const newPresent = newIds.has(String(t.newTaskId).replace(/^0x/, ""))
+		for (const task of tasks) {
+			const legacyTaskAbsent = !legacyHashPrefixes.has(String(task.oldPreimagePrefix))
+			const newTaskPresent = taskIds.has(String(task.newTaskId).replace(/^0x/, ""))
 			console.log(
-				`  #${t.ref}: old ${t.oldPreimagePrefix} gone=${oldGone}, new ${String(t.newTaskId).slice(0, 10)} present=${newPresent}`,
+				`  #${task.ref}: old ${task.oldPreimagePrefix} absent=${legacyTaskAbsent}, new ${String(task.newTaskId).slice(0, 10)} present=${newTaskPresent}`,
 			)
-			assert.ok(oldGone, `#${t.ref}: legacy schedule (${t.oldPreimagePrefix}) was not cancelled`)
-			assert.ok(newPresent, `#${t.ref}: new sweep task was not scheduled`)
+			assert.ok(
+				legacyTaskAbsent,
+				`#${task.ref}: legacy schedule (${task.oldPreimagePrefix}) was not cancelled`,
+			)
+			assert.ok(newTaskPresent, `#${task.ref}: new sweep task was not scheduled`)
 		}
 
 		console.log("\n[all] driving the new sweeps, checking drains + treasury")
-		const treasury = (id: number) =>
-			ah.api.query.Assets.Account.getValue(id, beneficiary).then((b: Any) => b?.balance ?? 0n)
-		const holderTok = (holderPub: string, id: number) =>
-			hyd.api.query.Tokens.Accounts.getValue(pubToHyd(holderPub), id).then(
-				(b: Any) => b?.free ?? 0n,
+		const treasuryBalance = (assetId: number): Promise<bigint> =>
+			assetHub.api.query.Assets.Account.getValue(assetId, beneficiary).then(
+				(account: Any) => account?.balance ?? 0n,
 			)
-		const interval = Number(tasks[0].plan.intervalBlocks) || 600
+		const holderBalance = (holderPubkeyHex: string, assetId: number): Promise<bigint> =>
+			hydration.api.query.Tokens.Accounts.getValue(
+				pubkeyToHydration(holderPubkeyHex),
+				assetId,
+			).then((account: Any) => account?.free ?? 0n)
+		const interval = Number(firstTask.plan.intervalBlocks) || 600
 		const executionsArg = isRecord(ctx.args) ? String(ctx.args.executions ?? "once") : "once"
-		const execAll = executionsArg === "all"
+		const driveFullDrain = executionsArg === "all"
 		const parsedExecCount = Number(executionsArg)
 		const execCount = Number.isInteger(parsedExecCount) && parsedExecCount > 0 ? parsedExecCount : 1
-		const snap = async () => ({
-			tU: await treasury(USDT_AH),
-			tC: await treasury(USDC_AH),
-			h: Object.fromEntries(
+		const snapshot = async (): Promise<Snapshot> => ({
+			treasuryUsdt: await treasuryBalance(USDT_ASSET_HUB),
+			treasuryUsdc: await treasuryBalance(USDC_ASSET_HUB),
+			holders: Object.fromEntries(
 				await Promise.all(
 					tasks.map(
-						async (t) =>
-							[t.ref, [await holderTok(t.holder, 10), await holderTok(t.holder, 22)]] as const,
+						async (task) =>
+							[
+								task.ref,
+								{
+									usdt: await holderBalance(task.holder, USDT_HYDRATION),
+									usdc: await holderBalance(task.holder, USDC_HYDRATION),
+								},
+							] as const,
 					),
 				),
-			) as Record<string, [bigint, bigint]>,
+			),
 		})
 		const advanceAndBuild = async () => {
-			await advanceTime(hyd, interval * 6000)
-			for (let j = 0; j < 6; j++) {
-				await build(hyd)
-				await build(ah)
+			await advanceTime(hydration, interval * 6000)
+			for (let built = 0; built < 6; built++) {
+				await build(hydration)
+				await build(assetHub)
 			}
 		}
-		const before = await snap()
-		for (const t of tasks) {
+		const before = await snapshot()
+		for (const task of tasks) {
 			try {
-				const d = await fireScheduledTask(ah, String(t.newTaskId))
-				console.log(`  #${t.ref} fired: ${JSON.stringify(d.result)}`)
-			} catch (e) {
-				if (String((e as Error).message).includes("not found"))
-					console.log(`  #${t.ref} already fired (single-shot done)`)
-				else throw e
+				const dispatch = await fireScheduledTask(assetHub, String(task.newTaskId))
+				console.log(`  #${task.ref} fired: ${JSON.stringify(dispatch.result)}`)
+			} catch (error) {
+				if (String((error as Error).message).includes("not found"))
+					console.log(`  #${task.ref} already fired (single-shot done)`)
+				else throw error
 			}
 			await advanceAndBuild()
 		}
-		const chunked = tasks.find((t) => t.mode === "chunked")
-		assert.ok(chunked, "no chunked task among the sweeps")
-		const chunkU = BigInt(chunked.amounts.usdt) / BigInt(chunked.plan.needed)
-		const chunkC = BigInt(chunked.amounts.usdc) / BigInt(chunked.plan.needed)
-		const maxChunkedFirings = execAll ? chunked.plan.needed + 20 : execCount
+		const chunkedTask = tasks.find((task) => task.mode === "chunked")
+		assert.ok(chunkedTask, "no chunked task among the sweeps")
+		const chunkUsdt = BigInt(chunkedTask.amounts.usdt) / BigInt(chunkedTask.plan.needed)
+		const chunkUsdc = BigInt(chunkedTask.amounts.usdc) / BigInt(chunkedTask.plan.needed)
+		const maxChunkedFirings = driveFullDrain ? chunkedTask.plan.needed + 20 : execCount
 		for (let firing = 1; firing < maxChunkedFirings; firing++) {
-			const [hu, hc] = [await holderTok(chunked.holder, 10), await holderTok(chunked.holder, 22)]
-			if (hu < chunkU && hc < chunkC) {
-				if (execAll) console.log(`  #${chunked.ref} holder drained`)
+			const holderUsdt = await holderBalance(chunkedTask.holder, USDT_HYDRATION)
+			const holderUsdc = await holderBalance(chunkedTask.holder, USDC_HYDRATION)
+			if (holderUsdt < chunkUsdt && holderUsdc < chunkUsdc) {
+				if (driveFullDrain) console.log(`  #${chunkedTask.ref} holder drained`)
 				break
 			}
 			try {
-				const d = await fireScheduledTask(ah, String(chunked.newTaskId))
+				const dispatch = await fireScheduledTask(assetHub, String(chunkedTask.newTaskId))
 				assert.ok(
-					isRecord(d.result) && d.result.success === true,
-					`#${chunked.ref} dispatch failed: ${JSON.stringify(d.result)}`,
+					isRecord(dispatch.result) && dispatch.result.success === true,
+					`#${chunkedTask.ref} dispatch failed: ${JSON.stringify(dispatch.result)}`,
 				)
-			} catch (e) {
-				if (String((e as Error).message).includes("not found")) break
-				throw e
+			} catch (error) {
+				if (String((error as Error).message).includes("not found")) break
+				throw error
 			}
 			await advanceAndBuild()
 			if (firing <= 2 || firing % 25 === 0)
-				console.log(`  #${chunked.ref}: ${firing + 1} executions`)
+				console.log(`  #${chunkedTask.ref}: ${firing + 1} executions`)
 		}
-		const after = await snap()
-		for (const t of tasks) {
-			const dU = before.h[t.ref][0] - after.h[t.ref][0]
-			const dC = before.h[t.ref][1] - after.h[t.ref][1]
+		const after = await snapshot()
+		for (const task of tasks) {
+			const startBalances = holderBalancesOf(before, task.ref)
+			const endBalances = holderBalancesOf(after, task.ref)
+			const usdtDrop = startBalances.usdt - endBalances.usdt
+			const usdcDrop = startBalances.usdc - endBalances.usdc
 			console.log(
-				`  #${t.ref} holder drained ${Number(dU) / 1e6} USDT + ${Number(dC) / 1e6} USDC (left ${Number(after.h[t.ref][0]) / 1e6}+${Number(after.h[t.ref][1]) / 1e6})`,
+				`  #${task.ref} holder drained ${Number(usdtDrop) / 1e6} USDT + ${Number(usdcDrop) / 1e6} USDC (left ${Number(endBalances.usdt) / 1e6}+${Number(endBalances.usdc) / 1e6})`,
 			)
-			assert.ok(dU > 0n && dC > 0n, `#${t.ref}: holder did not drain — the proxied transfer failed`)
-			const lookup = await ah.api.query.Scheduler.Lookup.getValue(String(t.newTaskId))
-			if (t.mode === "chunked") {
-				if (execAll)
+			assert.ok(
+				usdtDrop > 0n && usdcDrop > 0n,
+				`#${task.ref}: holder did not drain; the proxied transfer failed`,
+			)
+			const lookup = await assetHub.api.query.Scheduler.Lookup.getValue(String(task.newTaskId))
+			if (task.mode === "chunked") {
+				if (driveFullDrain)
 					assert.ok(
-						after.h[t.ref][0] < chunkU && after.h[t.ref][1] < chunkC,
-						`#${t.ref}: not fully drained (${Number(after.h[t.ref][0]) / 1e6}+${Number(after.h[t.ref][1]) / 1e6} left)`,
+						endBalances.usdt < chunkUsdt && endBalances.usdc < chunkUsdc,
+						`#${task.ref}: not fully drained (${Number(endBalances.usdt) / 1e6}+${Number(endBalances.usdc) / 1e6} left)`,
 					)
-				else assert.ok(lookup, `#${t.ref}: periodic sweep task unexpectedly gone`)
+				else assert.ok(lookup, `#${task.ref}: periodic sweep task unexpectedly gone`)
 			} else {
-				assert.ok(!lookup, `#${t.ref}: single-shot task still scheduled after firing`)
+				assert.ok(!lookup, `#${task.ref}: single-shot task still scheduled after firing`)
 			}
 		}
 		console.log(
-			`  treasury gained ${Number(after.tU - before.tU) / 1e6} USDT + ${Number(after.tC - before.tC) / 1e6} USDC -> ${beneficiary}`,
+			`  treasury gained ${Number(after.treasuryUsdt - before.treasuryUsdt) / 1e6} USDT + ${Number(after.treasuryUsdc - before.treasuryUsdc) / 1e6} USDC -> ${beneficiary}`,
 		)
-		assert.ok(after.tU > before.tU && after.tC > before.tC, "current treasury not credited")
-
+		assert.ok(
+			after.treasuryUsdt > before.treasuryUsdt && after.treasuryUsdc > before.treasuryUsdc,
+			"current treasury not credited",
+		)
 		console.log(
-			`\n[all] ${execAll ? "full sweep: " : ""}3 proxies added, 4 legacy schedules cancelled, sweeps drain their holders and credit the current treasury`,
+			`\n[all] ${driveFullDrain ? "full sweep: " : ""}3 proxies added, 4 legacy schedules cancelled, sweeps drain their holders and credit the current treasury`,
 		)
 	} finally {
-		ah.client.destroy()
-		hyd.client.destroy()
+		assetHub.client.destroy()
+		hydration.client.destroy()
 		relay.client.destroy()
 	}
 }

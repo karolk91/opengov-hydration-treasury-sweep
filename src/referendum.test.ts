@@ -1,12 +1,12 @@
 import assert from "node:assert/strict"
 import { before, describe, it } from "node:test"
 import { TraitsScheduleDispatchTime } from "@polkadot-api/descriptors"
-import { fromHex, toHex } from "polkadot-api/utils"
+import { toHex } from "polkadot-api/utils"
 import { getOfflineApis, type OfflineAssetHubApi, type OfflineCollectivesApi } from "./chains.ts"
+import { INLINE_PREIMAGE_LIMIT } from "./config.ts"
+import { toBytes } from "./hex.ts"
 import { buildReferendumCalls, callHash, type EncodedCall } from "./referendum.ts"
 
-// The vectors below come from `opengov-cli`'s test-suite (`src/tests.rs`), which uses
-// `system.remark("opengov-submit test")` as the proposal.
 const REMARK_PROPOSAL = "0x00004c6f70656e676f762d7375626d69742074657374"
 const REMARK_HASH = "0x8821e8db19b8e34b62ee8bc618a5ed3eecb9761d7d81349b00aa5ce5dfca2534"
 
@@ -24,7 +24,7 @@ describe("buildReferendumCalls", () => {
 		assert.equal(callHash(proposal.encodedData), REMARK_HASH)
 	})
 
-	it("matches opengov-cli for the Root track", () => {
+	it("encodes the Root track byte-for-byte like opengov-cli, so the calls are interchangeable with the reference tool", () => {
 		const calls = buildReferendumCalls(
 			{ assetHub, collectives },
 			proposal,
@@ -43,21 +43,19 @@ describe("buildReferendumCalls", () => {
 		)
 		assert.equal(calls.batches.length, 1)
 		assert.equal(calls.batches[0]?.chain, "ahp")
-		// Utility.force_batch(preimage, submit)
 		assert.equal(
 			toHex(calls.batches[0]?.encodedData ?? new Uint8Array()),
 			`0x2804${"08"}${"05005800004c6f70656e676f762d7375626d69742074657374"}${"3e000000028821e8db19b8e34b62ee8bc618a5ed3eecb9761d7d81349b00aa5ce5dfca253416000000010a000000"}`,
 		)
 	})
 
-	it("matches opengov-cli for the Whitelisted Caller track", () => {
+	it("encodes the Whitelisted Caller track byte-for-byte like opengov-cli, including the Fellowship whitelist referendum", () => {
 		const calls = buildReferendumCalls(
 			{ assetHub, collectives },
 			proposal,
 			"whitelisted-caller",
 			TraitsScheduleDispatchTime.After(10),
 		)
-		// Small enough to be inlined: no preimage on Collectives.
 		assert.equal(calls.preimageForWhitelistCall, undefined)
 		assert.equal(calls.fellowshipReferendumSubmission?.chain, "collectives")
 		assert.equal(
@@ -78,19 +76,18 @@ describe("buildReferendumCalls", () => {
 		)
 	})
 
-	it("falls back to a preimage on Collectives for large whitelist payloads", () => {
-		// Not reachable with a 32-byte hash; the XCM wrapper is always ~55 bytes. Sanity-check the
-		// size assumption instead so a future change in the wrapper is noticed.
+	it("inlines the Fellowship proposal because the whitelist wrapper is a fixed-size hash below the inline limit, so Collectives needs no preimage", () => {
 		const calls = buildReferendumCalls(
 			{ assetHub, collectives },
 			proposal,
 			"whitelisted-caller",
 			TraitsScheduleDispatchTime.At(1),
 		)
-		const inlineLength = fromHex(
-			"0x1f0005010100a10f05082f00000603008840008821e8db19b8e34b62ee8bc618a5ed3eecb9761d7d81349b00aa5ce5dfca2534",
-		).length
-		assert.ok(inlineLength <= 128)
-		assert.equal(calls.publicReferendumSubmission.decodedCall.value.type, "submit")
+		const submission = calls.fellowshipReferendumSubmission?.decodedCall.value.value as {
+			proposal: { type: string; value: unknown }
+		}
+		assert.equal(submission.proposal.type, "Inline")
+		assert.ok(toBytes(submission.proposal.value).length <= INLINE_PREIMAGE_LIMIT)
+		assert.equal(calls.preimageForWhitelistCall, undefined)
 	})
 })

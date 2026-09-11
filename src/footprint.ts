@@ -5,31 +5,20 @@ import { type CircuitBreakerState, getCircuitBreakerState, quoteXcmFees } from "
 import { accumulatorLoad, type ChunkPlan } from "./plan.ts"
 import { assetHubAssetLocation, DOT_LOCATION, type Weight, type XcmLocation } from "./xcm.ts"
 
-/** HDX on Hydration (the native token, GeneralIndex 0), as an XCM fee-payment location. */
 const HDX_LOCATION: XcmLocation = {
 	parents: 0,
 	interior: { type: "X1", value: { type: "GeneralIndex", value: 0n } },
 }
 
 export interface SweepEconomics {
-	/** Weight of one sweep message, for fee reporting and the v4 `fallbackMaxWeight`. */
 	readonly weight: Weight
-	/** Per-execution fee for one sweep message in each of DOT / HDX / USDT (raw units), or `undefined` if unpriced. */
 	readonly fees: ReadonlyMap<string, bigint | undefined>
-	/** USDT per 1 HDX, implied by the fee quote (the message weighs the same in each asset). */
 	readonly usdtPerHdx: number | undefined
 	readonly breaker: CircuitBreakerState | undefined
-	/** Hydration's egress limit in the stablecoins' units (HDX limit x price), or `undefined` if unavailable. */
 	readonly limitUnits: number | undefined
 	readonly windowMs: number | undefined
 }
 
-/**
- * Price one sweep message in DOT / HDX / USDT and read Hydration's egress circuit breaker, converting
- * its HDX-denominated limit into the stablecoins' units via the HDX price the quote implies. Shared by
- * the #1501 sweep generator and the #1729 combined-referendum builder to size the sweep chunk and
- * report fees. The message's weight is independent of the amounts, so any draft prices it correctly.
- */
 export async function quoteSweepEconomics(
 	api: HydrationApi,
 	sweepMessage: XcmVersionedXcm,
@@ -51,11 +40,6 @@ export async function quoteSweepEconomics(
 	return { weight, fees, usdtPerHdx, breaker, limitUnits, windowMs }
 }
 
-/**
- * Human-readable lines describing a plan's steady-state load on Hydration's egress accumulator as a
- * share of the (stablecoin-denominated) limit, including a peak-over-target warning and the HDX-price
- * caveat. `limitUnits` and the plan's totals are in the same 6-dp units.
- */
 export function describeFootprint(
 	plan: ChunkPlan,
 	limitUnits: number,
@@ -64,8 +48,8 @@ export function describeFootprint(
 	maxFootprint: number,
 ): string[] {
 	const load = accumulatorLoad(plan, intervalMs, windowMs)
-	const pct = (v: number) => `${((100 * v) / limitUnits).toFixed(1)}%`
-	const usd = (v: number) => formatUnits(BigInt(Math.round(v)), 6, "USD")
+	const pct = (units: number) => `${((100 * units) / limitUnits).toFixed(1)}%`
+	const usd = (units: number) => formatUnits(BigInt(Math.round(units)), 6, "USD")
 	const lines = [
 		`our footprint: ${usd(load.perExecution)} per execution (${pct(load.perExecution)}); ~${usd(load.perWindow)} per ${windowMs / 3_600_000}h window (${pct(load.perWindow)}); accumulator load between ~${pct(load.trough)} and ~${pct(load.peak)}`,
 	]

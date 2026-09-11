@@ -5,7 +5,6 @@ import { getWsProvider } from "polkadot-api/ws"
 export type AssetHubApi = TypedApi<typeof ahp>
 export type HydrationApi = TypedApi<typeof hydration>
 
-/** Offline APIs encode calls purely from the bundled metadata: no connection needed. */
 export type OfflineAssetHubApi = Awaited<ReturnType<typeof getOfflineApi<typeof ahp>>>
 export type OfflineCollectivesApi = Awaited<ReturnType<typeof getOfflineApi<typeof collectives>>>
 export type OfflineHydrationApi = Awaited<ReturnType<typeof getOfflineApi<typeof hydration>>>

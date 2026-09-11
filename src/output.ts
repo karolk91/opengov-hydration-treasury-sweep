@@ -15,7 +15,6 @@ export const CHAIN_NAMES = {
 } as const
 
 export interface PrintOptions {
-	/** Calls longer than this are printed as hash + file reference only. */
 	readonly lengthLimit: number
 }
 
@@ -47,7 +46,6 @@ function fileName(call: CallInfo): string {
 	return `${call.chain}-${slug}.call`
 }
 
-/** Writes one call as a `0x`-prefixed hex file (the format `opengov-cli` uses) and returns the path. */
 export function writeCallFile(dir: string, call: CallInfo): string {
 	mkdirSync(dir, { recursive: true })
 	const path = join(dir, fileName(call))
@@ -55,7 +53,6 @@ export function writeCallFile(dir: string, call: CallInfo): string {
 	return path
 }
 
-/** Writes every call as a `0x`-prefixed hex file (the format `opengov-cli` uses) and returns the paths. */
 export function writeCallFiles(dir: string, calls: ReferendumCalls): string[] {
 	mkdirSync(dir, { recursive: true })
 	const all = [
@@ -76,8 +73,6 @@ export function writeCallFiles(dir: string, calls: ReferendumCalls): string[] {
 export function writeJson(dir: string, name: string, value: unknown): string {
 	mkdirSync(dir, { recursive: true })
 	const path = join(dir, name)
-	// Not polkadot-api's `jsonSerialize`: it emits bigints as `"123n"`, but summary.json is read by
-	// plain-JSON consumers (the post-test calls `BigInt(field)`), so bigints must stay bare digits.
 	writeFileSync(
 		path,
 		`${JSON.stringify(value, (_key, v: unknown) => (typeof v === "bigint" ? v.toString() : v), 2)}\n`,

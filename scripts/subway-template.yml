@@ -1,14 +1,7 @@
-# Subway config template for the e2e RPC proxies.
-# `{{ENDPOINTS}}` and `{{PORT}}` are substituted per chain by scripts/subway.sh.
-# Adapted from polkadot-ecosystem-tests/.github/subway-template.yml.
 extensions:
   client:
     endpoints: {{ENDPOINTS}}
-    # Endpoints are listed best-first in scripts/endpoints.json; subway falls
-    # through array[1..N-1] as a failover ladder on stall/disconnect.
     shuffle_endpoints: false
-    # Per-upstream request timeout; subway retries the next endpoint on expiry,
-    # so this x retries must fit inside server.request_timeout_seconds below.
     request_timeout_seconds: 60
   event_bus:
   substrate_api:
@@ -16,8 +9,6 @@ extensions:
   telemetry:
     provider: none
   cache:
-    # A Chopsticks fork reads immutable historical state, so a long TTL is safe
-    # and turns repeated forks/lazy fetches into cache hits.
     default_ttl_seconds: 3600
     default_size: 10000
   merge_subscription:
@@ -26,8 +17,6 @@ extensions:
     port: {{PORT}}
     listen_address: '127.0.0.1'
     max_connections: 2000
-    # Chopsticks batches storage fetches when forking; keep this generous so a
-    # large prefetch batch is not rejected.
     max_batch_size: 1000
     request_timeout_seconds: 240
     http_methods:

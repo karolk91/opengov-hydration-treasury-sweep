@@ -12,14 +12,12 @@ function padToAccountId(prefix: Uint8Array, body: Uint8Array): Uint8Array {
 	return out
 }
 
-/** Sovereign account of a sibling parachain: `b"sibl" ++ u32_le(para_id)`, zero padded to 32 bytes. */
 export function siblingSovereignAccount(paraId: number): Uint8Array {
 	const id = new Uint8Array(4)
 	new DataView(id.buffer).setUint32(0, paraId, true)
 	return padToAccountId(textEncoder.encode("sibl"), id)
 }
 
-/** Account owned by a FRAME pallet: `b"modl" ++ pallet_id`, zero padded to 32 bytes. */
 export function palletAccount(palletId: Uint8Array): Uint8Array {
 	if (palletId.length !== PALLET_ID_LENGTH) {
 		throw new Error(`A PalletId is ${PALLET_ID_LENGTH} bytes, got ${palletId.length}`)
@@ -31,7 +29,6 @@ export function toSs58(publicKey: Uint8Array, ss58Prefix: number): SS58String {
 	return AccountId(ss58Prefix).dec(publicKey)
 }
 
-/** Accepts a 32-byte `0x` hex string or an SS58 address (any prefix) and returns the public key. */
 export function parseAccount(input: string): Uint8Array {
 	if (input.startsWith("0x")) {
 		const bytes = fromHex(input)
@@ -52,6 +49,8 @@ export function toSizedHex32(bytes: Uint8Array): SizedHex<32> {
 	return toHex(bytes)
 }
 
-export function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-	return a.length === b.length && a.every((byte, i) => byte === b[i])
+export function bytesEqual(first: Uint8Array, second: Uint8Array): boolean {
+	return (
+		first.length === second.length && first.every((byte, position) => byte === second[position])
+	)
 }

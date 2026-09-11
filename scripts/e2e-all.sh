@@ -48,7 +48,7 @@ BUILD_ARGS+=(--track "$TRACK")
 mkdir -p out
 rm -f out/all-*.call out/all-ah-sim.yml out/hyd-reduce.yml
 echo "== 1. building the consolidation referendum (${BUILD_ARGS[*]}) =="
-npx tsx scratch.buildAll.ts "${BUILD_ARGS[@]}"
+npx tsx src/consolidation.ts "${BUILD_ARGS[@]}"
 test -f out/all-ah-sim.yml || { echo "builder did not emit out/all-ah-sim.yml" >&2; exit 1; }
 
 PREIMAGE="$(tr -d '[:space:]' < out/all-preimage.call)"

@@ -1,6 +1,5 @@
 const textDecoder = new TextDecoder()
 
-/** Formats a raw on-chain amount with `decimals` fractional digits and thousands separators. */
 export function formatUnits(amount: bigint, decimals: number, symbol?: string): string {
 	const negative = amount < 0n
 	const abs = negative ? -amount : amount
@@ -13,7 +12,6 @@ export function formatUnits(amount: bigint, decimals: number, symbol?: string): 
 	return `${sign}${wholeStr}${fractionStr}${symbol ? ` ${symbol}` : ""}`
 }
 
-/** Parses a human amount such as `"1234.56"` into raw units with `decimals` fractional digits. */
 export function parseUnits(input: string, decimals: number): bigint {
 	const match = /^(\d+)(?:\.(\d+))?$/.exec(input.trim().replaceAll(",", ""))
 	if (!match) throw new Error(`Invalid amount: ${input}`)

@@ -23,7 +23,6 @@ export interface EncodedCall {
 	readonly decodedCall: TxCallData
 }
 
-/** A call together with the chain it must be submitted on and everything needed to talk about it. */
 export interface CallInfo extends EncodedCall {
 	readonly chain: Chain
 	readonly title: string
@@ -33,17 +32,17 @@ export interface CallInfo extends EncodedCall {
 
 export interface ReferendumCalls {
 	readonly track: Track
-	/** The privileged call the referendum will dispatch on Asset Hub. */
+
 	readonly proposal: CallInfo
-	/** Whitelisted Caller only: preimage of the Fellowship proposal, if it does not fit `Inline`. */
+
 	readonly preimageForWhitelistCall?: CallInfo
-	/** Whitelisted Caller only: the Fellowship referendum (on Collectives) that whitelists the proposal. */
+
 	readonly fellowshipReferendumSubmission?: CallInfo
-	/** Preimage of what the public referendum dispatches (the proposal, or its whitelist wrapper). */
+
 	readonly preimageForPublicReferendum: CallInfo
-	/** The public referendum submission on Asset Hub. */
+
 	readonly publicReferendumSubmission: CallInfo
-	/** One `Utility.force_batch` per chain with every call that has to be signed there. */
+
 	readonly batches: readonly CallInfo[]
 }
 
@@ -86,15 +85,6 @@ export interface ReferendumBuilders {
 	readonly collectives: OfflineCollectivesApi
 }
 
-/**
- * Generates every call needed to get `proposal` enacted through OpenGov on Polkadot Asset Hub,
- * following the same recipe as `opengov-cli submit-referendum`:
- *
- * - Root: `Preimage.note_preimage(proposal)` + `Referenda.submit(Root, Lookup(proposal))`.
- * - Whitelisted Caller: a Fellowship referendum on Collectives that sends
- *   `Whitelist.whitelist_call(hash(proposal))` to Asset Hub over XCM, plus the public referendum
- *   dispatching `Whitelist.dispatch_whitelisted_call_with_preimage(proposal)`.
- */
 export function buildReferendumCalls(
 	apis: ReferendumBuilders,
 	proposalCall: EncodedCall,
@@ -142,11 +132,8 @@ function buildWhitelistedReferendum(
 	proposal: CallInfo,
 	enactment: TraitsScheduleDispatchTime,
 ): ReferendumCalls {
-	// 1. The call the Fellowship needs to execute on Asset Hub.
 	const whitelistCall = assetHub.tx.Whitelist.whitelist_call({ call_hash: proposal.hash })
 
-	// 2. Sent from Collectives to Asset Hub over XCM. `OriginKind::Xcm` makes it arrive as the
-	//    Fellows plurality, which `Whitelist`'s `WhitelistOrigin` accepts.
 	const whitelistOverXcm = describeCall(
 		"collectives",
 		"Fellowship proposal: whitelist the call on Asset Hub",
@@ -166,7 +153,6 @@ function buildWhitelistedReferendum(
 		}),
 	)
 
-	// 3. The Fellowship referendum, inline when small enough, otherwise via a preimage.
 	const fellowshipEnactment = TraitsScheduleDispatchTime.After(FELLOWSHIP_ENACTMENT_AFTER)
 	const inline = whitelistOverXcm.length <= INLINE_PREIMAGE_LIMIT
 	const preimageForWhitelistCall = inline
@@ -188,8 +174,7 @@ function buildWhitelistedReferendum(
 		}),
 	)
 
-	// 4. The public referendum dispatches the proposal through the whitelist.
-	const dispatchWhitelisted = describeCall(
+	const whitelistDispatch = describeCall(
 		"ahp",
 		"Whitelist dispatch wrapper",
 		assetHub.tx.Whitelist.dispatch_whitelisted_call_with_preimage({ call: proposal.decodedCall }),
@@ -197,7 +182,7 @@ function buildWhitelistedReferendum(
 	const preimageForPublicReferendum = describeCall(
 		"ahp",
 		"Submit the preimage for the public referendum",
-		assetHub.tx.Preimage.note_preimage({ bytes: dispatchWhitelisted.encodedData }),
+		assetHub.tx.Preimage.note_preimage({ bytes: whitelistDispatch.encodedData }),
 	)
 	const publicReferendumSubmission = describeCall(
 		"ahp",
@@ -205,8 +190,8 @@ function buildWhitelistedReferendum(
 		assetHub.tx.Referenda.submit({
 			proposal_origin: WHITELISTED_CALLER_ORIGIN,
 			proposal: PreimagesBounded.Lookup({
-				hash: dispatchWhitelisted.hash,
-				len: dispatchWhitelisted.length,
+				hash: whitelistDispatch.hash,
+				len: whitelistDispatch.length,
 			}),
 			enactment_moment: enactment,
 		}),
@@ -237,7 +222,6 @@ function buildWhitelistedReferendum(
 	}
 }
 
-/** `force_batch` so that e.g. an already-noted preimage does not prevent the referendum submission. */
 function batch(
 	api: OfflineAssetHubApi | OfflineCollectivesApi,
 	chain: Chain,

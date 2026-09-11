@@ -27,7 +27,6 @@ describe("hydration calls", () => {
 		})
 		assert.equal(call.decodedCall.type, "Proxy")
 		assert.equal(call.decodedCall.value.type, "proxy")
-		// Proxy.proxy(real = holder, force_proxy_type = None) followed by XTokens.transfer_multicurrencies.
 		assert.equal(
 			toHex(call.encodedData.slice(0, 37)),
 			`0x1d00${toHex(parseAccount(DEFAULT_HOLDER)).slice(2)}008904`,

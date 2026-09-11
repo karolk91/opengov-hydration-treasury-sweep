@@ -7,3 +7,4 @@ out/
 npm-debug.log*
 .subway/
 hydration-prefund.gen.yml
+.agent/

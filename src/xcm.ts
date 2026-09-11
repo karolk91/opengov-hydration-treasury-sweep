@@ -29,7 +29,6 @@ export interface Weight {
 	proof_size: bigint
 }
 
-/** `../Parachain(paraId)`: a sibling parachain as seen from another parachain. */
 export const siblingParachainLocation = (paraId: number): XcmLocation => ({
 	parents: 1,
 	interior: XcmV5Junctions.X1(XcmV5Junction.Parachain(paraId)),
@@ -38,7 +37,6 @@ export const siblingParachainLocation = (paraId: number): XcmLocation => ({
 export const HYDRATION_LOCATION = siblingParachainLocation(HYDRATION_PARA_ID)
 export const ASSET_HUB_LOCATION = siblingParachainLocation(ASSET_HUB_PARA_ID)
 
-/** DOT as seen from a parachain. */
 export const DOT_LOCATION: XcmLocation = { parents: 1, interior: XcmV5Junctions.Here() }
 
 export const accountId32Location = (publicKey: Uint8Array): XcmLocation => ({
@@ -48,11 +46,6 @@ export const accountId32Location = (publicKey: Uint8Array): XcmLocation => ({
 	),
 })
 
-/**
- * Location of a `pallet_assets` asset of Polkadot Asset Hub, either from Asset Hub's own point of
- * view (`PalletInstance(50)/GeneralIndex(id)`) or from a sibling parachain such as Hydration
- * (`../Parachain(1000)/PalletInstance(50)/GeneralIndex(id)`).
- */
 export function assetHubAssetLocation(
 	assetId: bigint,
 	perspective: "asset-hub" | "sibling",
@@ -73,20 +66,15 @@ export const fungible = (id: XcmLocation, amount: bigint): XcmAsset => ({
 })
 
 export interface TransactParams {
-	/** DOT withdrawn from the sender's sovereign account on the destination to pay for execution. */
 	readonly feeBudget: bigint
-	/** SCALE-encoded destination-chain call. */
+
 	readonly call: Uint8Array
-	/** Only used if the message ever has to be downgraded to XCM v4; v5 weighs the call itself. */
+
 	readonly fallbackMaxWeight: Weight | undefined
-	/** Account on the destination that receives the unspent fee budget (the sovereign account). */
+
 	readonly refundTo: Uint8Array
 }
 
-/**
- * Paid `Transact` as `SovereignAccount`: withdraw DOT from the sender's sovereign account, buy
- * execution, dispatch the call as that account, refund whatever is left of the fee budget.
- */
 export function buildTransactXcm(params: TransactParams): XcmV5Instruction[] {
 	if (params.feeBudget <= 0n) throw new Error("The fee budget must be positive")
 	const fee = fungible(DOT_LOCATION, params.feeBudget)
@@ -108,7 +96,6 @@ export function buildTransactXcm(params: TransactParams): XcmV5Instruction[] {
 
 export const versionedXcm = (instructions: XcmV5Instruction[]) => XcmVersionedXcm.V5(instructions)
 
-/** `PolkadotXcm.send(../Parachain(2034), message)`; dispatched by Root its origin is Asset Hub itself. */
 export function buildSendToHydration(
 	assetHub: OfflineAssetHubApi,
 	instructions: XcmV5Instruction[],

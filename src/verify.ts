@@ -10,7 +10,6 @@ import { ASSET_HUB_LOCATION, HYDRATION_LOCATION, versionedXcm } from "./xcm.ts"
 
 type AssetHubRuntimeCall = Parameters<AssetHubApi["apis"]["DryRunApi"]["dry_run_call"]>[1]
 
-/** Shape of every `RuntimeEvent`; we only need the pallet/event names and a loosely typed payload. */
 interface AnyEvent {
 	readonly type: string
 	readonly value: { readonly type: string; readonly value: unknown }
@@ -19,7 +18,6 @@ interface AnyEvent {
 export interface CheckResult {
 	readonly title: string
 	readonly ok: boolean
-	/** The check did not run (e.g. it depends on out-of-band state); `ok` is true but unverified. */
 	readonly skipped?: boolean
 	readonly details: readonly string[]
 }
@@ -34,13 +32,14 @@ function json(value: unknown): string {
 	return JSON.stringify(value, jsonSerialize)
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null
 }
 
-/** `Proxy.ProxyExecuted { result }`: the inner call's outcome. */
 function proxyOutcome(events: readonly AnyEvent[]): { ok: boolean; error?: string } | undefined {
-	const event = events.find((e) => e.type === "Proxy" && e.value.type === "ProxyExecuted")
+	const event = events.find(
+		(record) => record.type === "Proxy" && record.value.type === "ProxyExecuted",
+	)
 	if (!event || !isRecord(event.value.value) || !isRecord(event.value.value.result))
 		return undefined
 	const result = event.value.value.result
@@ -57,7 +56,6 @@ function isParachain(location: XcmVersionedLocation, paraId: number): boolean {
 	)
 }
 
-/** Root dispatches the proposal on Asset Hub; the top-up XCM (if any) is forwarded to Hydration. */
 export async function dryRunProposal(
 	assetHub: AssetHubApi,
 	proposal: Proposal,
@@ -76,27 +74,26 @@ export async function dryRunProposal(
 	}
 	const { execution_result, emitted_events, forwarded_xcms } = dry.value
 	const events = emitted_events as readonly AnyEvent[]
-	const scheduled = events.filter(
-		(e) => e.type === "Scheduler" && e.value.type === "Scheduled",
+	const scheduledEventCount = events.filter(
+		(record) => record.type === "Scheduler" && record.value.type === "Scheduled",
 	).length
-	const expectedScheduled = 1
+	const expectedScheduledEvents = 1
 	const forwardedToHydration = forwarded_xcms
 		.filter(([dest]) => isParachain(dest, HYDRATION_PARA_ID))
 		.flatMap(([, xcms]) => xcms)
 	const details = [
 		`dispatch: ${execution_result.success ? "ok" : `error ${json(execution_result.value.error)}`}`,
 		`events: ${eventNames(events)}`,
-		`scheduler tasks created: ${scheduled} (expected ${expectedScheduled})`,
+		`scheduler tasks created: ${scheduledEventCount} (expected ${expectedScheduledEvents})`,
 		`XCMs forwarded to Hydration now: ${forwardedToHydration.length} (expected ${proposal.topUp ? 1 : 0})`,
 	]
 	const ok =
 		execution_result.success &&
-		scheduled === expectedScheduled &&
+		scheduledEventCount === expectedScheduledEvents &&
 		forwardedToHydration.length === (proposal.topUp ? 1 : 0)
 	return { result: { title, ok, details }, forwardedToHydration }
 }
 
-/** Executes one of our XCM programs on Hydration as if it had just arrived from Asset Hub. */
 export async function dryRunOnHydration(
 	hydration: HydrationApi,
 	title: string,
@@ -132,7 +129,6 @@ export async function dryRunOnHydration(
 	return { result: { title, ok, details }, forwardedToAssetHub }
 }
 
-/** Executes the reserve-withdrawal Hydration sends back, checking the beneficiary gets the assets. */
 export async function dryRunDepositOnAssetHub(
 	assetHub: AssetHubApi,
 	message: XcmVersionedXcm,
@@ -147,10 +143,10 @@ export async function dryRunDepositOnAssetHub(
 	if (!dry.success) return { title, ok: false, details: [`DryRunApi error: ${json(dry.value)}`] }
 	const { execution_result, emitted_events } = dry.value
 	const events = emitted_events as readonly AnyEvent[]
-	// `pallet_assets` credits through `fungibles::Balanced` (event `Deposited { asset_id, who, amount }`);
-	// older runtimes used `mint_into` (event `Issued { asset_id, owner, amount }`).
 	const credits = events.filter(
-		(e) => e.type === "Assets" && (e.value.type === "Deposited" || e.value.type === "Issued"),
+		(record) =>
+			record.type === "Assets" &&
+			(record.value.type === "Deposited" || record.value.type === "Issued"),
 	)
 	const details = [
 		`xcm outcome: ${execution_result.type}${execution_result.type === "Complete" ? "" : ` ${json(execution_result.value)}`}`,
@@ -158,16 +154,16 @@ export async function dryRunDepositOnAssetHub(
 	]
 	let ok = execution_result.type === "Complete"
 	for (const asset of expected) {
-		const hits = credits.filter((e) => {
-			const payload = e.value.value
+		const hits = credits.filter((record) => {
+			const payload = record.value.value
 			return (
 				isRecord(payload) &&
 				payload.asset_id === Number(asset.assetHubAssetId) &&
 				(payload.who === beneficiary || payload.owner === beneficiary)
 			)
 		})
-		const amount = hits.reduce((sum, e) => {
-			const payload = e.value.value
+		const amount = hits.reduce((sum, record) => {
+			const payload = record.value.value
 			return isRecord(payload) && typeof payload.amount === "bigint" ? sum + payload.amount : sum
 		}, 0n)
 		details.push(
@@ -185,18 +181,12 @@ export interface VerificationReport {
 	readonly ok: boolean
 }
 
-/** Runs the whole path once for each distinct XCM leg using the chains' `DryRunApi`s. */
 export async function verifyProposal(
 	assetHub: AssetHubApi,
 	hydration: HydrationApi,
 	proposal: Proposal,
 	beneficiary: SS58String,
 	assets: ReadonlyArray<{ readonly assetHubAssetId: bigint; readonly symbol: string }>,
-	/**
-	 * Skip the single-sweep dry run. Set when the sovereign account is funded out of band (its live
-	 * DOT balance is below the per-message fee budget), so a dry run against live state would fail at
-	 * `WithdrawAsset` with `FailedToTransactAsset`. The sweep is exercised for real in the e2e fork.
-	 */
 	skipSweepDryRun = false,
 ): Promise<VerificationReport> {
 	const checks: CheckResult[] = []

@@ -15,13 +15,11 @@ export interface EncodedCall {
 }
 
 export interface TransferChunk {
-	/** Hydration asset id and raw amount for every asset moved by this execution. */
 	readonly currencies: ReadonlyArray<readonly [assetId: number, amount: bigint]>
-	/** Account on Asset Hub receiving the assets. */
+
 	readonly beneficiary: Uint8Array
 }
 
-/** Zero amounts are dropped; the largest remaining amount pays the Asset Hub fee. */
 export function activeCurrencies(currencies: TransferChunk["currencies"]): {
 	currencies: Array<[number, bigint]>
 	feeItem: number
@@ -38,12 +36,6 @@ export function activeCurrencies(currencies: TransferChunk["currencies"]): {
 	return { currencies: active, feeItem }
 }
 
-/**
- * `Proxy.proxy(holder, None, XTokens.transfer_multicurrencies(...))`, executed by Asset Hub's
- * sovereign account as the proxy delegate. `xtokens` burns the derivatives on Hydration and sends
- * Asset Hub (the reserve) an XCM to release the backing assets to the beneficiary, paying Asset
- * Hub's fee with the largest transferred asset.
- */
 export function buildTransferChunkCall(
 	hydration: OfflineHydrationApi,
 	holder: SS58String,
@@ -69,10 +61,6 @@ export function buildTransferChunkCall(
 	})
 }
 
-/**
- * `Proxy.proxy(holder, None, Currencies.transfer(to, asset, amount))`: moves some of the holder's
- * fee DOT to Asset Hub's sovereign account so that it can pay for the XCM executions that follow.
- */
 export function buildTopUpCall(
 	hydration: OfflineHydrationApi,
 	holder: SS58String,

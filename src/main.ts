@@ -35,7 +35,7 @@ import { describeFootprint, quoteSweepEconomics } from "./footprint.ts"
 import { formatUnits, heading, parseUnits } from "./format.ts"
 import {
 	type CircuitBreakerState,
-	getAllTokenHoldings,
+	getAllTokenBalances,
 	getAssetInfo,
 	getNativeBalance,
 	getProxyDelegates,
@@ -113,7 +113,7 @@ async function resolveStablecoins(
 	)
 }
 
-async function printHoldings(
+async function printBalances(
 	hydrationApi: HydrationApi,
 	title: string,
 	account: SS58String,
@@ -123,15 +123,15 @@ async function printHoldings(
 	console.log(`  ${account}`)
 	const native = await getNativeBalance(hydrationApi, account)
 	console.log(`  HDX (native): ${fmtOrml(native, HDX_DECIMALS, "HDX")}`)
-	const holdings = await getAllTokenHoldings(hydrationApi, account)
-	if (holdings.length === 0) console.log("  (no orml_tokens balances)")
-	for (const holding of holdings) {
-		const info = await getAssetInfo(hydrationApi, holding.assetId)
-		const symbol = info?.symbol || `asset ${holding.assetId}`
+	const tokenBalances = await getAllTokenBalances(hydrationApi, account)
+	if (tokenBalances.length === 0) console.log("  (no orml_tokens balances)")
+	for (const tokenBalance of tokenBalances) {
+		const info = await getAssetInfo(hydrationApi, tokenBalance.assetId)
+		const symbol = info?.symbol || `asset ${tokenBalance.assetId}`
 		const decimals = info?.decimals ?? 0
-		const marker = highlight.has(holding.assetId) ? "  <-- sweep" : ""
+		const marker = highlight.has(tokenBalance.assetId) ? "  <-- sweep" : ""
 		console.log(
-			`  ${symbol} (id ${holding.assetId}): ${fmtOrml(holding.data, decimals, symbol)}${marker}`,
+			`  ${symbol} (id ${tokenBalance.assetId}): ${fmtOrml(tokenBalance.data, decimals, symbol)}${marker}`,
 		)
 	}
 }
@@ -149,7 +149,9 @@ async function checkProxy(
 			`  delegate ${toSs58(parseAccount(delegate.delegate), HYDRATION_SS58_PREFIX)} type=${delegate.proxyType} delay=${delegate.delay}${isSovereign ? "  <-- Asset Hub's sovereign account" : ""}`,
 		)
 	}
-	const match = delegates.find((d) => bytesEqual(parseAccount(d.delegate), sovereign.publicKey))
+	const match = delegates.find((delegate) =>
+		bytesEqual(parseAccount(delegate.delegate), sovereign.publicKey),
+	)
 	if (!match) {
 		throw new Error(
 			"Asset Hub's sovereign account has no proxy delegation from the holder; the Transact would fail with NotProxy",
@@ -235,7 +237,7 @@ function printPlan(plan: ChunkPlan, blockTimeMs: number): void {
 	console.log(heading("Sweep plan"))
 	const describe = (amounts: readonly bigint[]) =>
 		plan.assets
-			.map((asset, i) => formatUnits(amounts[i] ?? 0n, asset.decimals, asset.symbol))
+			.map((asset, position) => formatUnits(amounts[position] ?? 0n, asset.decimals, asset.symbol))
 			.join(" + ")
 	const hours = (blocks: number) => ((blocks * blockTimeMs) / 3_600_000).toFixed(1)
 	console.log(
@@ -249,7 +251,7 @@ function printPlan(plan: ChunkPlan, blockTimeMs: number): void {
 		`  ${plan.scheduled} executions scheduled; the needed ones finish ~${hours(neededDurationBlocks(plan))}h after enactment, the margin ~${hours(totalDurationBlocks(plan))}h`,
 	)
 	const dust = plan.assets
-		.map((asset, i) => formatUnits(plan.dust[i] ?? 0n, asset.decimals, asset.symbol))
+		.map((asset, position) => formatUnits(plan.dust[position] ?? 0n, asset.decimals, asset.symbol))
 		.join(" + ")
 	console.log(`  rounding dust left on the holder: ${dust}`)
 }
@@ -300,20 +302,19 @@ async function main(argv: readonly string[]): Promise<void> {
 		console.log(`  Hydration finalized block: #${hydrationBlock.number} (${hydrationBlock.hash})`)
 		console.log(`  Asset Hub finalized block: #${assetHubBlock.number} (${assetHubBlock.hash})`)
 
-		// --- Hydration side -------------------------------------------------------------------
 		const coins = await resolveStablecoins(hydration.api, holder)
 		const dotAssetId = await resolveAssetIdByLocation(hydration.api, DOT_LOCATION)
 		if (dotAssetId === undefined) throw new Error("Hydration's asset registry does not know DOT")
 		const sweepIds = new Set(coins.map((coin) => coin.hydrationAssetId))
-		await printHoldings(
+		await printBalances(
 			hydration.api,
-			"Holdings of the holder (pure proxy) on Hydration",
+			"Balances of the holder (pure proxy) on Hydration",
 			holder,
 			sweepIds,
 		)
-		await printHoldings(
+		await printBalances(
 			hydration.api,
-			"Holdings of Asset Hub's sovereign account on Hydration",
+			"Balances of Asset Hub's sovereign account on Hydration",
 			sovereign.ss58,
 			new Set(),
 		)
@@ -326,11 +327,8 @@ async function main(argv: readonly string[]): Promise<void> {
 		const usdtAsset = assets.find((asset) => asset.symbol === "USDT") ?? assets[0]
 		if (!usdtAsset) throw new Error("no assets configured")
 
-		// --- Asset Hub side ----------------------------------------------------------------------
 		const beneficiary = await resolveBeneficiary(assetHub.api, options)
 		const blockTimeMs = await measureSchedulerBlockTimeMs(assetHub.client, assetHub.api)
-		// Rounded so that re-running the tool yields the same schedule (and hashes) despite jitter in
-		// the measured block time.
 		const intervalBlocks = Math.max(
 			100,
 			Math.round((options.intervalHours * 3_600_000) / blockTimeMs / 100) * 100,
@@ -358,16 +356,15 @@ async function main(argv: readonly string[]): Promise<void> {
 				hasDotPool(assetHub.api, assetHubAssetLocation(asset.assetHubAssetId, "asset-hub")),
 			])
 			console.log(
-				`  ${metadata.symbol} (#${id}): beneficiary holds ${formatUnits(beneficiaryBalance, asset.decimals)}, Hydration's sovereign holds ${formatUnits(reserveBalance, asset.decimals)}, DOT pool for fees: ${pool ? "yes" : "NO"}`,
+				`  ${metadata.symbol} (#${id}): beneficiary balance ${formatUnits(beneficiaryBalance, asset.decimals)}, Hydration's sovereign balance ${formatUnits(reserveBalance, asset.decimals)}, DOT pool for fees: ${pool ? "yes" : "NO"}`,
 			)
 			if (reserveBalance < asset.amount) {
 				throw new Error(
-					`Hydration's sovereign account on Asset Hub holds less ${asset.symbol} than the total to sweep; the reserve withdrawals would fail`,
+					`Hydration's sovereign account on Asset Hub has less ${asset.symbol} than the total to sweep; the reserve withdrawals would fail`,
 				)
 			}
 		}
 
-		// --- Chunking and fees ---------------------------------------------------------------
 		const feeBudget = parseUnits(options.feeBudgetDot, DOT_DECIMALS)
 		const topUpAmount = parseUnits(options.topUpDot, DOT_DECIMALS)
 		const offline: OfflineApis = await getOfflineApis()
@@ -380,21 +377,19 @@ async function main(argv: readonly string[]): Promise<void> {
 			priority: 0,
 			fallbackMaxWeight: undefined,
 		}
-		// Weigh one sweep message (its weight does not depend on the amounts) to price the fees, to
-		// convert the HDX-denominated limit into the stablecoins' units and to set the v4 fallback.
 		const draftChunk = parseUnits(options.chunk ?? DEFAULTS.chunkFallback, usdtAsset.decimals)
 		const draft = buildProposal(offline, {
 			...baseParams,
 			plan: planChunks(assets, draftChunk, intervalBlocks, options.extraExecutions),
 		})
-		const econ = await quoteSweepEconomics(
+		const economics = await quoteSweepEconomics(
 			hydration.api,
 			versionedXcm(draft.periodic.instructions),
 			usdtAsset.assetHubAssetId,
 		)
-		const feeDot = econ.fees.get("DOT")
-		const { usdtPerHdx, limitUnits, windowMs } = econ
-		printCircuitBreaker(econ.breaker, usdtPerHdx)
+		const feeDot = economics.fees.get("DOT")
+		const { usdtPerHdx, limitUnits, windowMs } = economics
+		printCircuitBreaker(economics.breaker, usdtPerHdx)
 
 		const intervalMs = intervalBlocks * blockTimeMs
 		let chunk: bigint
@@ -433,7 +428,7 @@ async function main(argv: readonly string[]): Promise<void> {
 
 		console.log(heading("Fees on Hydration"))
 		console.log(
-			`  weight of one execution: ref_time ${econ.weight.ref_time}, proof_size ${econ.weight.proof_size}`,
+			`  weight of one execution: ref_time ${economics.weight.ref_time}, proof_size ${economics.weight.proof_size}`,
 		)
 		console.log(
 			`  estimated fee:           ${feeDot === undefined ? "unknown" : formatUnits(feeDot, DOT_DECIMALS, "DOT")} per execution`,
@@ -444,9 +439,6 @@ async function main(argv: readonly string[]): Promise<void> {
 		const liveSovereignDot = withdrawable(
 			await getTokenBalance(hydration.api, sovereign.ss58, dotAssetId),
 		)
-		// `--assume-sovereign-dot` models an off-chain transfer that pre-funds the sovereign before
-		// the referendum enacts, so the fee-sufficiency checks below use it instead of the live
-		// balance (typically paired with `--top-up-dot 0`).
 		const assumedSovereignDot =
 			options.assumeSovereignDot !== undefined
 				? parseUnits(options.assumeSovereignDot, DOT_DECIMALS)
@@ -491,10 +483,9 @@ async function main(argv: readonly string[]): Promise<void> {
 		printPlan(plan, blockTimeMs)
 		if (options.balancesOnly) return
 
-		// --- Build the proposal ---------------------------------------------------------------
 		const proposal: Proposal = buildProposal(offline, {
 			...params,
-			fallbackMaxWeight: econ.weight,
+			fallbackMaxWeight: economics.weight,
 		})
 		console.log(heading("Proposal legs"))
 		if (proposal.topUp) printLeg(proposal.topUp, options.lengthLimit)
@@ -512,7 +503,6 @@ async function main(argv: readonly string[]): Promise<void> {
 		)
 		console.log(`  to stop early, governance dispatches: ${toHex(cancel.encodedData)}`)
 
-		// Round-trip through the live runtime's metadata to be sure the call decodes there.
 		const live = await assetHub.api.txFromCallData(proposal.call.encodedData)
 		if (
 			JSON.stringify(live.decodedCall, jsonSerialize) !==
@@ -530,12 +520,8 @@ async function main(argv: readonly string[]): Promise<void> {
 		console.log(heading("Proposal"))
 		printCall(proposalInfo, { lengthLimit: options.lengthLimit })
 
-		// --- Verify with the runtimes' DryRunApi -----------------------------------------------
 		if (!options.skipDryRun) {
 			console.log(heading("Dry run"))
-			// When the live sovereign can't cover one fee budget, the sweep relies on out-of-band
-			// pre-funding that a live dry run can't see — skip just that leg (the proposal dispatch is
-			// still dry-run, and the sweep runs for real in the e2e fork).
 			const skipSweepDryRun = liveSovereignDot < feeBudget
 			const report = await verifyProposal(
 				assetHub.api,
@@ -552,7 +538,6 @@ async function main(argv: readonly string[]): Promise<void> {
 			if (!report.ok) throw new Error("dry run failed; not generating referendum calls")
 		}
 
-		// --- Referendum calls ----------------------------------------------------------------
 		console.log(heading(`Referendum calls (${options.track} track)`))
 		const calls = buildReferendumCalls(
 			{ assetHub: offline.assetHub, collectives: offline.collectives },
@@ -602,7 +587,7 @@ async function main(argv: readonly string[]): Promise<void> {
 					estimatedPerExecution: feeDot,
 					topUp: params.topUp?.amount,
 				},
-				circuitBreaker: econ.breaker,
+				circuitBreaker: economics.breaker,
 				legs: {
 					topUp: proposal.topUp ? legSummary(proposal.topUp) : undefined,
 					periodic: legSummary(proposal.periodic),

@@ -1,15 +1,4 @@
 #!/usr/bin/env bash
-# Start / stop local subway RPC proxies (caching + failover, from AcalaNetwork/subway)
-# in front of the public Polkadot / Asset Hub / Hydration endpoints, so the e2e's
-# repeated Chopsticks forks hit a warm local cache and transparently fail over when a
-# public node stalls.
-#
-# Usage:
-#   scripts/subway.sh start     # generate configs, start proxies, wait until each responds
-#   scripts/subway.sh stop      # stop the proxies started by `start`
-#   scripts/subway.sh status    # show whether each proxy responds on /liveness
-#
-# Ports (override via env): AH_SUBWAY_PORT=9011  HYDRATION_SUBWAY_PORT=9012  RELAY_SUBWAY_PORT=9013
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -23,7 +12,6 @@ AH_SUBWAY_PORT="${AH_SUBWAY_PORT:-9011}"
 HYDRATION_SUBWAY_PORT="${HYDRATION_SUBWAY_PORT:-9012}"
 RELAY_SUBWAY_PORT="${RELAY_SUBWAY_PORT:-9013}"
 
-# key-in-endpoints.json : port
 PAIRS=(
   "assetHubPolkadot:${AH_SUBWAY_PORT}"
   "hydration:${HYDRATION_SUBWAY_PORT}"
@@ -90,7 +78,6 @@ stop() {
       rm -f "$pidf"
     fi
   done
-  # Belt and suspenders: reap any stragglers pointing at our configs.
   pkill -f "subway --config $RUN_DIR/" 2>/dev/null || true
 }
 

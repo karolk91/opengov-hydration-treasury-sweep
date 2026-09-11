@@ -51,7 +51,6 @@ describe("buildProposal", () => {
 			calls.map((call) => `${call.type}.${call.value.type}`),
 			["PolkadotXcm.send", "Scheduler.schedule_named_after"],
 		)
-		// ceil(120,000 / 50,000) = 3 needed + 2 extra = 5 executions, every 600 blocks.
 		assert.equal(proposal.periodic.count, 5)
 		assert.equal(proposal.periodic.firstAfter, 600)
 		assert.equal(proposal.periodic.every, 600)
@@ -64,7 +63,6 @@ describe("buildProposal", () => {
 		assert.equal(scheduled.id, schedulerTaskId())
 		assert.equal(scheduled.id, proposal.periodic.taskId)
 		assert.match(scheduled.id, /^0x[0-9a-f]{64}$/)
-		// Scheduler.cancel_named(id) is offered as the emergency stop.
 		assert.equal(proposal.cancel.decodedCall.type, "Scheduler")
 		assert.equal(proposal.cancel.decodedCall.value.type, "cancel_named")
 		assert.equal((proposal.cancel.decodedCall.value.value as { id: string }).id, scheduled.id)
@@ -90,7 +88,6 @@ describe("buildProposal", () => {
 				id: "0x6d6f646c70792f74727372790000000000000000000000000000000000000000",
 			},
 		})
-		// Both legs are paid Transacts refunded to the sovereign account.
 		for (const leg of [proposal.topUp, proposal.periodic]) {
 			assert.ok(leg)
 			assert.equal(leg.instructions.length, 5)

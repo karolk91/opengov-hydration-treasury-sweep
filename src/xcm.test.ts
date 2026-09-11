@@ -107,7 +107,6 @@ describe("buildSendToHydration", () => {
 		)
 		assert.equal(send.decodedCall.type, "PolkadotXcm")
 		assert.equal(send.decodedCall.value.type, "send")
-		// pallet 31 / call 0, then VersionedLocation::V5 { parents: 1, X1(Parachain(2034)) }, then VersionedXcm::V5.
 		assert.equal(toHex(send.encodedData.slice(0, 9)), "0x1f0005010100c91f05")
 	})
 })

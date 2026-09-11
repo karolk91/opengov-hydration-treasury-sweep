@@ -4,7 +4,6 @@ import type { HydrationApi } from "./chains.ts"
 import { bytesToUtf8 } from "./format.ts"
 import type { Weight, XcmLocation } from "./xcm.ts"
 
-/** `orml_tokens::AccountData`. */
 export interface OrmlAccountData {
 	readonly free: bigint
 	readonly reserved: bigint
@@ -18,12 +17,10 @@ export interface HydrationAssetInfo {
 	readonly existentialDeposit: bigint
 }
 
-/** Amount `orml_tokens` lets the account withdraw: free balance not covered by a freeze. */
 export function withdrawable(data: OrmlAccountData): bigint {
 	return data.free > data.frozen ? data.free - data.frozen : 0n
 }
 
-/** Hydration's asset registry maps XCM locations to its local asset ids. */
 export function resolveAssetIdByLocation(
 	api: HydrationApi,
 	location: XcmLocation,
@@ -53,23 +50,22 @@ export function getTokenBalance(
 	return api.query.Tokens.Accounts.getValue(account, assetId)
 }
 
-export interface TokenHolding {
+export interface TokenBalance {
 	readonly assetId: number
 	readonly data: OrmlAccountData
 }
 
-/** Every `orml_tokens` balance of `account` (the native HDX balance lives in `System.Account`). */
-export async function getAllTokenHoldings(
+export async function getAllTokenBalances(
 	api: HydrationApi,
 	account: SS58String,
-): Promise<TokenHolding[]> {
+): Promise<TokenBalance[]> {
 	const entries: Array<{ keyArgs: [SS58String, number]; value: OrmlAccountData }> =
 		await api.query.Tokens.Accounts.getEntries(account)
-	const holdings: TokenHolding[] = entries.map((entry) => ({
+	const balances: TokenBalance[] = entries.map((entry) => ({
 		assetId: entry.keyArgs[1],
 		data: entry.value,
 	}))
-	return holdings.sort((a, b) => a.assetId - b.assetId)
+	return balances.sort((first, second) => first.assetId - second.assetId)
 }
 
 export async function getNativeBalance(
@@ -99,20 +95,14 @@ export async function getProxyDelegates(
 }
 
 export interface CircuitBreakerState {
-	/** Global XCM egress limit, in HDX units, over a sliding `windowMs`. */
 	readonly limit: bigint
 	readonly windowMs: bigint
-	/** Egress accumulated so far (HDX units), already decayed to `nowMs`. */
 	readonly accumulator: bigint
 	readonly lockdownUntilMs: bigint | undefined
 	readonly ignored: boolean
 	readonly nowMs: bigint
 }
 
-/**
- * The circuit breaker's accumulator as of `nowMs`: it decays linearly to zero over `windowMs`
- * from its last on-chain update. Mirrors `pallet_circuit_breaker`'s decay rule.
- */
 export function decayAccumulator(
 	value: bigint,
 	lastUpdateMs: bigint,
@@ -120,15 +110,11 @@ export function decayAccumulator(
 	windowMs: bigint,
 ): bigint {
 	if (windowMs <= 0n) return value
-	const elapsed = nowMs > lastUpdateMs ? nowMs - lastUpdateMs : 0n
-	if (elapsed >= windowMs) return 0n
-	return value - (value * elapsed) / windowMs
+	const elapsedMs = nowMs > lastUpdateMs ? nowMs - lastUpdateMs : 0n
+	if (elapsedMs >= windowMs) return 0n
+	return value - (value * elapsedMs) / windowMs
 }
 
-/**
- * Hydration's `pallet_circuit_breaker` caps the value (in HDX) that may leave the chain through
- * XCM within a sliding window; the accumulator decays linearly over that window.
- */
 export async function getCircuitBreakerState(
 	api: HydrationApi,
 ): Promise<CircuitBreakerState | undefined> {
@@ -152,11 +138,9 @@ export async function getCircuitBreakerState(
 
 export interface XcmFeeQuote {
 	readonly weight: Weight
-	/** Fee for `weight` in each requested asset (raw units), `undefined` if the runtime cannot price it. */
 	readonly fees: ReadonlyMap<string, bigint | undefined>
 }
 
-/** Weighs a message with `XcmPaymentApi` and prices that weight in each of the given assets. */
 export async function quoteXcmFees(
 	api: HydrationApi,
 	message: XcmVersionedXcm,

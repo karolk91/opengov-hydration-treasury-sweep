@@ -6,29 +6,16 @@ import type { Track } from "./referendum.ts"
 export interface Options {
 	readonly track: Track
 	readonly enactment: TraitsScheduleDispatchTime
-	/** Account on Hydration holding the stablecoins (SS58, any prefix). */
 	readonly holder: string
-	/** Override of the beneficiary on Asset Hub (defaults to the treasury pot). */
 	readonly beneficiary: string | undefined
-	/** Optional overrides of the swept totals, in human units (e.g. "1234.56"). */
 	readonly usdtAmount: string | undefined
 	readonly usdcAmount: string | undefined
-	/** Per-asset amount per execution, human units; derived from `maxFootprint` when omitted. */
 	readonly chunk: string | undefined
-	/** Share (0..1) of Hydration's egress limit our accumulator load may peak at. */
 	readonly maxFootprint: number
 	readonly intervalHours: number
-	/** Executions scheduled beyond the needed ones, as a safety margin. */
 	readonly extraExecutions: number
 	readonly feeBudgetDot: string
-	/** DOT moved from the holder to the sovereign account first; "0" disables the top-up. */
 	readonly topUpDot: string
-	/**
-	 * Simulate the sovereign account being pre-funded with this much DOT before the referendum,
-	 * in place of an on-chain top-up: the fee-sufficiency checks use this figure instead of the
-	 * live balance. Pair with `--top-up-dot 0`. Lets the per-message fee budget be over-budgeted
-	 * freely (unspent DOT is refunded) without the bootstrap top-up's balance constraints.
-	 */
 	readonly assumeSovereignDot: string | undefined
 	readonly skipDryRun: boolean
 	readonly balancesOnly: boolean
@@ -38,8 +25,8 @@ export interface Options {
 	readonly hydrationEndpoints: readonly string[]
 }
 
-export const HELP = `Generate the OpenGov calls for a Polkadot referendum that sweeps all USDT and USDC held on
-Hydration by a pure proxy to the Polkadot Asset Hub treasury.
+export const HELP = `Generate the OpenGov calls for a Polkadot referendum that sweeps all USDT and USDC on
+Hydration from a pure proxy to the Polkadot Asset Hub treasury.
 
 Usage: npm start -- [options]
 
@@ -49,7 +36,7 @@ Referendum:
   --at <block>                       Enact at a specific Asset Hub block number
 
 Sweep:
-  --holder <account>                 Hydration account holding the funds (default: ${DEFAULT_HOLDER})
+  --holder <account>                 Hydration account with the funds (default: ${DEFAULT_HOLDER})
   --beneficiary <account>            Destination on Asset Hub (SS58 or 0x hex). Default: treasury pot
   --usdt <amount>                    Sweep this USDT total instead of the current balance
   --usdc <amount>                    Sweep this USDC total instead of the current balance
@@ -86,27 +73,27 @@ function parseTrack(value: string): Track {
 }
 
 function parseNonNegativeInt(value: string, flag: string): number {
-	const parsed = Number(value)
-	if (!Number.isInteger(parsed) || parsed < 0) {
+	const valueAsNumber = Number(value)
+	if (!Number.isInteger(valueAsNumber) || valueAsNumber < 0) {
 		throw new Error(`${flag} expects a non-negative integer, got "${value}"`)
 	}
-	return parsed
+	return valueAsNumber
 }
 
 function parseShare(value: string, flag: string): number {
-	const parsed = Number(value)
-	if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 1) {
+	const valueAsNumber = Number(value)
+	if (!Number.isFinite(valueAsNumber) || valueAsNumber <= 0 || valueAsNumber > 1) {
 		throw new Error(`${flag} expects a share between 0 and 1, got "${value}"`)
 	}
-	return parsed
+	return valueAsNumber
 }
 
 function parsePositiveNumber(value: string, flag: string): number {
-	const parsed = Number(value)
-	if (!Number.isFinite(parsed) || parsed <= 0) {
+	const valueAsNumber = Number(value)
+	if (!Number.isFinite(valueAsNumber) || valueAsNumber <= 0) {
 		throw new Error(`${flag} expects a positive number, got "${value}"`)
 	}
-	return parsed
+	return valueAsNumber
 }
 
 export function parseOptions(argv: readonly string[]): Options | "help" {
