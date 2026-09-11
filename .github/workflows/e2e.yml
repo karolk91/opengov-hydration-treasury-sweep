@@ -4,9 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       executions:
-        description: "Sweeps to drive: 'once' fires each sweep a single time; 'all' drives the chunked sweep to full drain (pair with reduce_chunked_to)"
-        type: choice
-        options: [once, all]
+        description: "Sweeps to drive: 'once' fires each sweep once; a number N drives the chunked sweep N times on live balances; 'all' drives it to full drain (pair with reduce_chunked_to)"
+        type: string
         default: once
       enact_block:
         description: "Enactment block B for At(B) (empty = auto-pick a valid off-grid block; the dry-run relocates enactment to the current relay head regardless)"

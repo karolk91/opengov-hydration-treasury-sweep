@@ -147,7 +147,10 @@ export default async function all(ctx: PostTestContext): Promise<void> {
 				(b: Any) => b?.free ?? 0n,
 			)
 		const interval = Number(tasks[0].plan.intervalBlocks) || 600
-		const execAll = isRecord(ctx.args) && ctx.args.executions === "all"
+		const executionsArg = isRecord(ctx.args) ? String(ctx.args.executions ?? "once") : "once"
+		const execAll = executionsArg === "all"
+		const parsedExecCount = Number(executionsArg)
+		const execCount = Number.isInteger(parsedExecCount) && parsedExecCount > 0 ? parsedExecCount : 1
 		const snap = async () => ({
 			tU: await treasury(USDT_AH),
 			tC: await treasury(USDC_AH),
@@ -183,26 +186,26 @@ export default async function all(ctx: PostTestContext): Promise<void> {
 		assert.ok(chunked, "no chunked task among the sweeps")
 		const chunkU = BigInt(chunked.amounts.usdt) / BigInt(chunked.plan.needed)
 		const chunkC = BigInt(chunked.amounts.usdc) / BigInt(chunked.plan.needed)
-		if (execAll) {
-			for (let k = 0; k < chunked.plan.needed + 20; k++) {
-				const [hu, hc] = [await holderTok(chunked.holder, 10), await holderTok(chunked.holder, 22)]
-				if (hu < chunkU && hc < chunkC) {
-					console.log(`  #${chunked.ref} holder drained`)
-					break
-				}
-				try {
-					const d = await fireScheduledTask(ah, String(chunked.newTaskId))
-					assert.ok(
-						isRecord(d.result) && d.result.success === true,
-						`#${chunked.ref} dispatch failed: ${JSON.stringify(d.result)}`,
-					)
-				} catch (e) {
-					if (String((e as Error).message).includes("not found")) break
-					throw e
-				}
-				await advanceAndBuild()
-				if (k <= 2 || k % 25 === 0) console.log(`  driven ${k + 2} #${chunked.ref} executions`)
+		const maxChunkedFirings = execAll ? chunked.plan.needed + 20 : execCount
+		for (let firing = 1; firing < maxChunkedFirings; firing++) {
+			const [hu, hc] = [await holderTok(chunked.holder, 10), await holderTok(chunked.holder, 22)]
+			if (hu < chunkU && hc < chunkC) {
+				if (execAll) console.log(`  #${chunked.ref} holder drained`)
+				break
 			}
+			try {
+				const d = await fireScheduledTask(ah, String(chunked.newTaskId))
+				assert.ok(
+					isRecord(d.result) && d.result.success === true,
+					`#${chunked.ref} dispatch failed: ${JSON.stringify(d.result)}`,
+				)
+			} catch (e) {
+				if (String((e as Error).message).includes("not found")) break
+				throw e
+			}
+			await advanceAndBuild()
+			if (firing <= 2 || firing % 25 === 0)
+				console.log(`  #${chunked.ref}: ${firing + 1} executions`)
 		}
 		const after = await snap()
 		for (const t of tasks) {
