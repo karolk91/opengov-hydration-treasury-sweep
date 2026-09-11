@@ -31,17 +31,16 @@ import {
 	STABLECOINS,
 	type Stablecoin,
 } from "./config.ts"
+import { describeFootprint, quoteSweepEconomics } from "./footprint.ts"
 import { formatUnits, heading, parseUnits } from "./format.ts"
 import {
 	type CircuitBreakerState,
 	getAllTokenHoldings,
 	getAssetInfo,
-	getCircuitBreakerState,
 	getNativeBalance,
 	getProxyDelegates,
 	getTokenBalance,
 	type OrmlAccountData,
-	quoteXcmFees,
 	resolveAssetIdByLocation,
 	withdrawable,
 } from "./hydration.ts"
@@ -54,7 +53,6 @@ import {
 } from "./output.ts"
 import {
 	type AssetAmount,
-	accumulatorLoad,
 	type ChunkPlan,
 	chunkForFootprint,
 	neededDurationBlocks,
@@ -64,7 +62,7 @@ import {
 import { buildProposal, type Proposal, type SweepParams, type XcmLeg } from "./proposal.ts"
 import { buildReferendumCalls, describeCall } from "./referendum.ts"
 import { verifyProposal } from "./verify.ts"
-import { assetHubAssetLocation, DOT_LOCATION, versionedXcm, type XcmLocation } from "./xcm.ts"
+import { assetHubAssetLocation, DOT_LOCATION, versionedXcm } from "./xcm.ts"
 
 interface ResolvedStablecoin extends Stablecoin {
 	readonly hydrationAssetId: number
@@ -389,28 +387,16 @@ async function main(argv: readonly string[]): Promise<void> {
 			...baseParams,
 			plan: planChunks(assets, draftChunk, intervalBlocks, options.extraExecutions),
 		})
-		const feeAssets = new Map<string, XcmLocation>([
-			["DOT", DOT_LOCATION],
-			["HDX", { parents: 0, interior: { type: "X1", value: { type: "GeneralIndex", value: 0n } } }],
-			["USDT", assetHubAssetLocation(usdtAsset.assetHubAssetId, "sibling")],
-		])
-		const quote = await quoteXcmFees(
+		const econ = await quoteSweepEconomics(
 			hydration.api,
 			versionedXcm(draft.periodic.instructions),
-			feeAssets,
+			usdtAsset.assetHubAssetId,
 		)
-		const feeDot = quote.fees.get("DOT")
-		const feeHdx = quote.fees.get("HDX")
-		const feeUsdt = quote.fees.get("USDT")
-		const usdtPerHdx =
-			feeHdx && feeUsdt && feeHdx > 0n ? Number(feeUsdt) / Number(feeHdx) : undefined
-		const breaker = await getCircuitBreakerState(hydration.api)
-		printCircuitBreaker(breaker, usdtPerHdx)
+		const feeDot = econ.fees.get("DOT")
+		const { usdtPerHdx, limitUnits, windowMs } = econ
+		printCircuitBreaker(econ.breaker, usdtPerHdx)
 
 		const intervalMs = intervalBlocks * blockTimeMs
-		const limitUnits =
-			breaker && usdtPerHdx !== undefined ? Number(breaker.limit) * usdtPerHdx : undefined
-		const windowMs = breaker ? Number(breaker.windowMs) : undefined
 		let chunk: bigint
 		if (options.chunk !== undefined) {
 			chunk = parseUnits(options.chunk, usdtAsset.decimals)
@@ -434,25 +420,20 @@ async function main(argv: readonly string[]): Promise<void> {
 		const plan = planChunks(assets, chunk, intervalBlocks, options.extraExecutions)
 		const params: SweepParams = { ...baseParams, plan }
 		if (limitUnits !== undefined && windowMs !== undefined) {
-			const load = accumulatorLoad(plan, intervalMs, windowMs)
-			const pct = (v: number) => `${((100 * v) / limitUnits).toFixed(1)}%`
-			const usd = (v: number) => formatUnits(BigInt(Math.round(v)), 6, "USD")
-			console.log(
-				`  our footprint: ${usd(load.perExecution)} per execution (${pct(load.perExecution)}); ~${usd(load.perWindow)} per ${windowMs / 3_600_000}h window (${pct(load.perWindow)}); accumulator load between ~${pct(load.trough)} and ~${pct(load.peak)}`,
-			)
-			if (load.peak / limitUnits > options.maxFootprint + 1e-9) {
-				console.warn(
-					`  warning: peak load exceeds ${(options.maxFootprint * 100).toFixed(0)}% of the egress limit; use a smaller --chunk or a longer --interval-hours`,
-				)
+			for (const line of describeFootprint(
+				plan,
+				limitUnits,
+				windowMs,
+				intervalMs,
+				options.maxFootprint,
+			)) {
+				console.log(`  ${line}`)
 			}
-			console.log(
-				"  note: the limit is denominated in HDX, so a lower HDX price during the sweep raises our share proportionally",
-			)
 		}
 
 		console.log(heading("Fees on Hydration"))
 		console.log(
-			`  weight of one execution: ref_time ${quote.weight.ref_time}, proof_size ${quote.weight.proof_size}`,
+			`  weight of one execution: ref_time ${econ.weight.ref_time}, proof_size ${econ.weight.proof_size}`,
 		)
 		console.log(
 			`  estimated fee:           ${feeDot === undefined ? "unknown" : formatUnits(feeDot, DOT_DECIMALS, "DOT")} per execution`,
@@ -513,7 +494,7 @@ async function main(argv: readonly string[]): Promise<void> {
 		// --- Build the proposal ---------------------------------------------------------------
 		const proposal: Proposal = buildProposal(offline, {
 			...params,
-			fallbackMaxWeight: quote.weight,
+			fallbackMaxWeight: econ.weight,
 		})
 		console.log(heading("Proposal legs"))
 		if (proposal.topUp) printLeg(proposal.topUp, options.lengthLimit)
@@ -621,7 +602,7 @@ async function main(argv: readonly string[]): Promise<void> {
 					estimatedPerExecution: feeDot,
 					topUp: params.topUp?.amount,
 				},
-				circuitBreaker: breaker,
+				circuitBreaker: econ.breaker,
 				legs: {
 					topUp: proposal.topUp ? legSummary(proposal.topUp) : undefined,
 					periodic: legSummary(proposal.periodic),

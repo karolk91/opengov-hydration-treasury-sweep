@@ -1,45 +1,19 @@
-# Manual end-to-end run of the Hydration treasury sweep:
-#   generate the referendum calls -> polkadot-referenda-tester forks Asset Hub (+ Collectives for the
-#   whitelisted track) + Hydration + the relay on Chopsticks, creates and executes the referenda ->
-#   post-tests/sweep.ts drives the scheduled sweeps and asserts the outcome.
-#
-# The exact generated calls and the post-test results are printed in the job summary, and the full
-# log + out/ artifacts are uploaded.
-#
-# Uses github.com/karolk91/polkadot-referenda-tester (default ref: feat/post-test-hook, the branch
-# with the --post-test hook). If that repo is private, add a read PAT as the PRT_TOKEN secret.
 name: e2e
 
 on:
   workflow_dispatch:
     inputs:
-      track:
-        description: "Referendum track"
-        type: choice
-        options: [root, whitelisted-caller]
-        default: root
       executions:
-        description: "Sweeps to drive: 0 = enactment checks only, N, or 'all' (full schedule + margin + completion)"
-        type: string
-        default: "2"
-      prefund_sovereign_dot:
-        description: "Pre-fund the sovereign with this much DOT via storage override (empty = use its existing DOT; add --top-up-dot via generator_args for a top-up leg)"
-        type: string
-        default: ""
-      fee_budget_dot:
-        description: "DOT withdrawn per execution for Hydration XCM fees (surplus is refunded)"
-        type: string
-        default: "0.02"
-      sweep_override:
-        description: "Reduced sweep: override BOTH the holder's USDT and USDC to this amount (fast drain/margin testing; requires prefund)"
+        description: "Sweeps to drive: 'once' fires each sweep a single time; 'all' drives the chunked sweep to full drain (pair with reduce_chunked_to)"
+        type: choice
+        options: [once, all]
+        default: once
+      enact_block:
+        description: "Enactment block B for At(B) (empty = auto-pick a valid off-grid block; the dry-run relocates enactment to the current relay head regardless)"
         type: string
         default: ""
-      extra_executions:
-        description: "Margin executions beyond the needed ones (empty = generator default)"
-        type: string
-        default: ""
-      generator_args:
-        description: "Extra flags for the call generator, e.g. --max-footprint 0.1 --interval-hours 2"
+      reduce_chunked_to:
+        description: "Cap the chunked holder's USDT+USDC in the fork to this 6-dp amount so 'all' finishes fast (empty = live balances)"
         type: string
         default: ""
       block_details:
@@ -55,13 +29,11 @@ on:
         type: string
         default: feat/post-test-hook
 
-run-name: "e2e: ${{ inputs.track }}, executions=${{ inputs.executions }}${{ inputs.prefund_sovereign_dot != '' && format(', prefund={0} DOT', inputs.prefund_sovereign_dot) || '' }}${{ inputs.sweep_override != '' && format(', sweep={0}', inputs.sweep_override) || '' }}"
+run-name: "e2e: executions=${{ inputs.executions }}${{ inputs.enact_block != '' && format(', enact@{0}', inputs.enact_block) || '' }}${{ inputs.reduce_chunked_to != '' && format(', reduce={0}', inputs.reduce_chunked_to) || '' }}"
 
 jobs:
   e2e:
     runs-on: ubuntu-latest
-    # A full sweep is ~1.5-3 h on the 4-vCPU runner (single-thread WASM block building);
-    # the platform caps a hosted job at 6 h.
     timeout-minutes: 330
     steps:
       - name: Checkout
@@ -113,58 +85,50 @@ jobs:
       - name: Run e2e
         env:
           PRT_DIR: ${{ github.workspace }}/prt
-          TRACK: ${{ inputs.track }}
           EXECUTIONS: ${{ inputs.executions }}
-          PREFUND_SOVEREIGN_DOT: ${{ inputs.prefund_sovereign_dot }}
-          FEE_BUDGET_DOT: ${{ inputs.fee_budget_dot }}
-          SWEEP_USDT: ${{ inputs.sweep_override }}
-          SWEEP_USDC: ${{ inputs.sweep_override }}
-          EXTRA_EXECUTIONS: ${{ inputs.extra_executions }}
+          ENACT_BLOCK: ${{ inputs.enact_block }}
+          REDUCE_CHUNKED_TO: ${{ inputs.reduce_chunked_to }}
           BLOCK_DETAILS: ${{ inputs.block_details }}
-          GEN_EXTRA_ARGS: ${{ inputs.generator_args }}
           USE_SUBWAY: ${{ inputs.use_subway && '1' || '0' }}
           NODE_NO_WARNINGS: "1"
-        # `shell: bash` runs with `-o pipefail`, so a failing e2e is not masked by `tee`.
         shell: bash
-        run: bash scripts/e2e.sh 2>&1 | tee e2e.log
+        run: bash scripts/e2e-all.sh 2>&1 | tee e2e.log
 
-      - name: Job summary (exact calls + results)
+      - name: Job summary (decoded schedules + exact calls + results)
         if: always()
         run: |
           {
-            echo "## Hydration treasury sweep e2e"
+            echo "## Hydration treasury consolidation e2e"
             echo
             echo "| parameter | value |"
             echo "|---|---|"
-            echo "| track | \`${{ inputs.track }}\` |"
             echo "| executions | \`${{ inputs.executions }}\` |"
-            echo "| prefund sovereign | \`${{ inputs.prefund_sovereign_dot || '(none)' }}\` |"
-            echo "| fee budget / msg | \`${{ inputs.fee_budget_dot }}\` DOT |"
-            echo "| sweep override | \`${{ inputs.sweep_override || '(live balances)' }}\` |"
-            echo "| extra executions | \`${{ inputs.extra_executions || '(default)' }}\` |"
-            echo "| generator args | \`${{ inputs.generator_args || '(none)' }}\` |"
+            echo "| enact block | \`${{ inputs.enact_block || '(auto off-grid)' }}\` |"
+            echo "| reduce chunked to | \`${{ inputs.reduce_chunked_to || '(live balances)' }}\` |"
             echo "| subway | \`${{ inputs.use_subway }}\` |"
             echo "| prt ref | \`${{ inputs.prt_ref }}\` |"
             echo
 
-            if [ -f out/summary.json ]; then
-              echo "### Plan"
+            if [ -f out/summary-all.json ]; then
+              echo "### Consolidation plan (decoded live)"
               echo '```json'
-              jq '{track, enactment, holder, beneficiary,
-                   amounts: [.amounts[] | {symbol, total: .formatted}],
-                   plan, fees, schedulerTask, proposalHash: .proposal.hash,
-                   publicReferendum}' out/summary.json
+              jq '{beneficiary, delegateToAdd, enactAtBlock, sovereignAccountOnHydration,
+                   tasks: [.tasks[] | {ref, mode, holder: .holder[0:8], addProxy,
+                                       cancel: {when: .cancel.when, index: .cancel.index},
+                                       needed: .plan.needed,
+                                       usdt: (.amounts.usdt|tonumber/1e6), usdc: (.amounts.usdc|tonumber/1e6)}]}' \
+                out/summary-all.json
               echo '```'
               echo
             fi
 
-            if ls out/*.call >/dev/null 2>&1; then
+            if ls out/all-*.call >/dev/null 2>&1; then
               echo "### Exact calls"
               echo
-              echo "The preimage + referendum submissions below are exactly what was handed to the tester;"
-              echo "batches are the single-extrinsic convenience form."
+              echo "The preimage + referendum submission below are exactly what was handed to the tester."
               echo
-              for f in out/*.call; do
+              for f in out/all-preimage.call out/all-submit.call; do
+                [ -f "$f" ] || continue
                 echo "<details><summary><code>$(basename "$f")</code> ($(( $(wc -c < "$f") / 2 )) bytes)</summary>"
                 echo
                 echo '```'
@@ -177,8 +141,8 @@ jobs:
 
             echo "### Result"
             echo '```'
-            grep -aE "Fellowship referendum #[0-9]+ (created|executed)|Governance referendum #[0-9]+ (created|executed)|\[post-test\]|holder drained after|executions run|margin runs|treasury gained|holder dropped|holder left|peak breaker|schedule complete|all assertions passed|Post-referendum test passed|Workflow completed|AssertionError|Error:" e2e.log \
-              | grep -avE "building #" | tail -40 || echo "(no result lines — see the uploaded log)"
+            grep -aE "Governance referendum #[0-9]+ (created|executed)|BatchCompleted|\[all\]|delegates:|old .* gone=|new .* present=|fired:|already fired|holder drained|treasury gained|Post-referendum test passed|Workflow completed|AssertionError|Error:" e2e.log \
+              | grep -avE "building #" | tail -60 || echo "(no result lines — see the uploaded log)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -186,10 +150,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-${{ inputs.track }}-${{ github.run_number }}
+          name: e2e-${{ github.run_number }}
           path: |
             e2e.log
             out/
-            hydration-prefund.gen.yml
           if-no-files-found: ignore
           retention-days: 14

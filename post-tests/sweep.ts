@@ -131,6 +131,11 @@ interface Chain {
 /** Print every built block with its events; disabled with `--post-test-args '{"blockDetails":0}'`. */
 let showBlockDetails = true
 
+/** Toggle block-by-block logging (used by importers driving many executions). */
+export function setBlockDetails(on: boolean): void {
+	showBlockDetails = on
+}
+
 /** Reject if a promise takes longer than `ms` — a Chopsticks build can occasionally wedge. */
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
 	return Promise.race([
@@ -170,7 +175,7 @@ function encodeU64Le(v: bigint): string {
  * the relay parent by `deltaMs / 6s`. This lets Hydration's egress circuit breaker decay
  * between executions (its accumulator decays against `Timestamp.Now`).
  */
-async function advanceTime(chain: Chain, deltaMs: number): Promise<void> {
+export async function advanceTime(chain: Chain, deltaMs: number): Promise<void> {
 	const [now, relayParent] = await Promise.all([
 		chain.api.query.Timestamp.Now.getValue(),
 		chain.api.query.ParachainSystem.LastRelayChainBlockNumber.getValue(),
@@ -247,7 +252,7 @@ async function printBlockDetails(chain: Chain): Promise<void> {
  * task id — not just any dispatch, since other Root tasks share the agenda — and that dispatch is
  * returned so callers need not re-read the events.
  */
-async function fireScheduledTask(ah: Chain, taskId: string): Promise<{ result: unknown }> {
+export async function fireScheduledTask(ah: Chain, taskId: string): Promise<{ result: unknown }> {
 	const entries = await ah.api.query.Scheduler.Agenda.getEntries()
 	let fromBlock: number | undefined
 	let items: unknown
@@ -312,7 +317,9 @@ async function flush(chain: Chain, n: number): Promise<void> {
  * succeeded/failed" — after the holder is drained the margin executions are still delivered but the
  * transfer must fail, so both halves are asserted separately.
  */
-async function proxyOutcome(chain: Chain): Promise<{ seen: boolean; ok: boolean; error?: string }> {
+export async function proxyOutcome(
+	chain: Chain,
+): Promise<{ seen: boolean; ok: boolean; error?: string }> {
 	const events = (await chain.api.query.System.Events.getValue()) as Array<{
 		event: { type: string; value: { type: string; value: unknown } }
 	}>
