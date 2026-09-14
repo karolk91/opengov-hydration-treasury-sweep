@@ -135,10 +135,11 @@ jobs:
               echo
               for f in out/all-*.call; do
                 [ -f "$f" ] || continue
-                echo "<details><summary><code>$(basename "$f")</code> ($(( $(wc -c < "$f") / 2 )) bytes)</summary>"
+                hex="$(tr -d '[:space:]' < "$f" | sed 's/^0x//')"
+                echo "<details><summary><code>$(basename "$f")</code> ($(( ${#hex} / 2 )) bytes)</summary>"
                 echo
                 echo '```'
-                cat "$f"
+                echo "0x$hex"
                 echo '```'
                 echo "</details>"
               done
