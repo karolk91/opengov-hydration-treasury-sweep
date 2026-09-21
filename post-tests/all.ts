@@ -78,7 +78,9 @@ export default async function all(ctx: PostTestContext): Promise<void> {
 		}
 
 		const tasksNeedingProxy = tasks.filter((task) => task.addProxy)
-		console.log(`\n[all] driving ${tasksNeedingProxy.length} add-proxy XCM(s) to Hydration`)
+		console.log(
+			`\n[all] driving the add-proxy XCM to Hydration (${tasksNeedingProxy.length} holders)`,
+		)
 		const pending = new Set<string>(tasksNeedingProxy.map((task) => task.holder))
 		for (let round = 0; round < 16 && pending.size > 0; round++) {
 			await build(relay)

@@ -25,6 +25,7 @@ export function hexToBytes(hex: string): Uint8Array {
 export function toBytes(value: unknown): Uint8Array {
 	if (value == null) throw new Error("cannot convert null to bytes")
 	if (value instanceof Uint8Array) return value
+	if (typeof value === "string") return hexToBytes(value)
 	const binary = value as BinaryLike
 	if (typeof binary.asOpaqueBytes === "function") return binary.asOpaqueBytes()
 	if (typeof binary.asBytes === "function") return binary.asBytes()

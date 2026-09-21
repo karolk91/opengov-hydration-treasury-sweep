@@ -30,11 +30,11 @@ import {
 } from "./config.ts"
 import { describeFootprint, quoteSweepEconomics } from "./footprint.ts"
 import { hexToBytes, hexWithoutPrefix, toBytes } from "./hex.ts"
-import { getTokenBalance } from "./hydration.ts"
+import { getTokenBalance, quoteXcmFees } from "./hydration.ts"
 import { type AssetAmount, chunkForFootprint, planChunks } from "./plan.ts"
 import { buildProposal, schedulerTaskId } from "./proposal.ts"
 import { buildReferendumCalls } from "./referendum.ts"
-import { buildTransactXcm, versionedXcm } from "./xcm.ts"
+import { buildMultiTransactXcm, DOT_LOCATION, versionedXcm } from "./xcm.ts"
 
 // biome-ignore lint/suspicious/noExplicitAny: runtime-decoded chain data
 type Any = any
@@ -65,9 +65,12 @@ const INTERVAL = 600
 const EXTRA = 16
 const MAX_FOOTPRINT = 0.15
 const BLOCK_MS = 6000
-const FEE_BUDGET_PLANCK = 200_000_000n
+const SWEEP_FEE_BUDGET_PLANCK = 1_000_000_000n
 const ADD_PROXY_FEE_BUDGET_PLANCK = 1_000_000_000n
+const DOT_PLANCK_PER_DOT = 10_000_000_000n
 const intervalMs = INTERVAL * BLOCK_MS
+const formatDot = (planck: bigint) =>
+	`${(Number(planck) / Number(DOT_PLANCK_PER_DOT)).toFixed(6)} DOT`
 
 const PLAN_FOR: Record<string, { ref: string; mode: SweepMode }> = {
 	c5b7975d: { ref: "1501", mode: "leftover" },
@@ -246,7 +249,7 @@ const proposalParamsFor = (holder: string) => ({
 	holder,
 	sovereign,
 	beneficiary: beneficiaryKey,
-	feeBudget: FEE_BUDGET_PLANCK,
+	feeBudget: SWEEP_FEE_BUDGET_PLANCK,
 	topUp: undefined,
 	priority: 0,
 	fallbackMaxWeight: undefined,
@@ -262,28 +265,60 @@ function leftover(schedule: LegacySchedule): [bigint, bigint] {
 	]
 }
 
-const addProxySends: Any[] = []
 const cancelCalls: Any[] = []
 const scheduleCalls: Any[] = []
 const summaryTasks: Any[] = []
+const holdersNeedingProxy: string[] = []
+const feeQuotes: Array<{
+	leg: string
+	quotedPlanck: bigint
+	budgetPlanck: bigint
+	executions: number
+}> = []
+const dotFeeAsset = new Map([["DOT", DOT_LOCATION]])
 
-async function addProxySendFor(holderSs58: string): Promise<Any> {
+async function quoteLeg(
+	leg: string,
+	instructions: Any[],
+	budgetPlanck: bigint,
+	executions: number,
+) {
+	const quote = await quoteXcmFees(hydration.api, versionedXcm(instructions), dotFeeAsset)
+	const quotedPlanck = quote.fees.get("DOT")
+	if (quotedPlanck === undefined) throw new Error(`Hydration cannot price the ${leg} XCM in DOT`)
+	if (budgetPlanck < quotedPlanck * 2n)
+		throw new Error(
+			`${leg}: fee budget ${formatDot(budgetPlanck)} is below twice the quoted fee ${formatDot(quotedPlanck)}`,
+		)
+	feeQuotes.push({ leg, quotedPlanck, budgetPlanck, executions })
+}
+
+async function addProxySendFor(holderAddresses: readonly string[]): Promise<Any> {
 	const addProxy = offline.hydration.tx.Proxy.add_proxy({
 		delegate: toHydrationAddress(AH_SOVEREIGN_PUBKEY_HEX),
 		proxy_type: { type: "Any", value: undefined } as never,
 		delay: 0,
 	})
-	const hydrationCall = offline.hydration.tx.Proxy.proxy({
-		real: holderSs58,
-		force_proxy_type: undefined,
-		call: addProxy.decodedCall,
-	})
-	const relayToHydration = buildTransactXcm({
+	const proxiedCalls = holderAddresses.map(
+		(holderAddress) =>
+			offline.hydration.tx.Proxy.proxy({
+				real: holderAddress,
+				force_proxy_type: undefined,
+				call: addProxy.decodedCall,
+			}).encodedData,
+	)
+	const relayToHydration = buildMultiTransactXcm({
 		feeBudget: ADD_PROXY_FEE_BUDGET_PLANCK,
-		call: hydrationCall.encodedData,
+		calls: proxiedCalls,
 		fallbackMaxWeight: undefined,
 		refundTo: hexToBytes(PARENT_PUBKEY_HEX),
 	})
+	await quoteLeg(
+		`add-proxy (${holderAddresses.length} Transacts)`,
+		relayToHydration,
+		ADD_PROXY_FEE_BUDGET_PLANCK,
+		1,
+	)
 	const relayXcmPallet = relay.tx.XcmPallet
 	if (!relayXcmPallet?.send) throw new Error("relay runtime has no XcmPallet.send")
 	const relaySend = relayXcmPallet.send({
@@ -355,6 +390,12 @@ for (const schedule of schedules) {
 			console.log(`  #${schedule.ref} ${line}`)
 	}
 	const proposal = buildProposal(offline, { ...proposalParamsFor(schedule.holderSs58), plan })
+	await quoteLeg(
+		`#${schedule.ref} sweep`,
+		proposal.periodic.instructions,
+		SWEEP_FEE_BUDGET_PLANCK,
+		plan.scheduled,
+	)
 	const taskId = schedulerTaskId(`${SCHEDULER_TASK_LABEL}:${schedule.ref}`)
 	scheduleCalls.push(
 		offline.assetHub.tx.Scheduler.schedule_named_after({
@@ -369,8 +410,7 @@ for (const schedule of schedules) {
 	cancelCalls.push(
 		offline.assetHub.tx.Scheduler.cancel({ when, index: schedule.index }).decodedCall,
 	)
-	if (!schedule.hasSovereignProxy)
-		addProxySends.push((await addProxySendFor(schedule.holderSs58)).decodedCall)
+	if (!schedule.hasSovereignProxy) holdersNeedingProxy.push(schedule.holderSs58)
 	console.log(
 		`  #${schedule.ref} ${schedule.mode}: move ${Number(usdt) / 1e6}+${Number(usdc) / 1e6} in ${plan.needed} exec(s); cancel (when ${when}, idx ${schedule.index})${schedule.hasSovereignProxy ? "" : "; +add-proxy"}; task ${taskId.slice(0, 10)}`,
 	)
@@ -387,11 +427,27 @@ for (const schedule of schedules) {
 	})
 }
 
+const addProxySends: Any[] =
+	holdersNeedingProxy.length > 0 ? [(await addProxySendFor(holdersNeedingProxy)).decodedCall] : []
 const batch = offline.assetHub.tx.Utility.batch_all({
 	calls: [...addProxySends, ...cancelCalls, ...scheduleCalls],
 })
 console.log(
-	`\nbatch_all: ${addProxySends.length} add-proxy + ${cancelCalls.length} cancel + ${scheduleCalls.length} schedule = ${batch.encodedData.length} bytes, hash 0x${toHex(Blake2256(batch.encodedData)).slice(2)}`,
+	`\nbatch_all: ${addProxySends.length} add-proxy (${holdersNeedingProxy.length} holders) + ${cancelCalls.length} cancel + ${scheduleCalls.length} schedule = ${batch.encodedData.length} bytes, hash 0x${toHex(Blake2256(batch.encodedData)).slice(2)}`,
+)
+console.log("\nHydration XCM fees (XcmPaymentApi quote at build time; unspent budget is refunded):")
+let totalQuotedPlanck = 0n
+let totalBudgetPlanck = 0n
+for (const quote of feeQuotes) {
+	const ratio = Number(quote.budgetPlanck) / Number(quote.quotedPlanck)
+	console.log(
+		`  ${quote.leg}: quoted ${formatDot(quote.quotedPlanck)}, budget ${formatDot(quote.budgetPlanck)} (${ratio.toFixed(0)}x), executions ${quote.executions}`,
+	)
+	totalQuotedPlanck += quote.quotedPlanck * BigInt(quote.executions)
+	totalBudgetPlanck += quote.budgetPlanck * BigInt(quote.executions)
+}
+console.log(
+	`  total over all executions: quoted ${formatDot(totalQuotedPlanck)}; the sovereign account needs ${formatDot(ADD_PROXY_FEE_BUDGET_PLANCK > SWEEP_FEE_BUDGET_PLANCK ? ADD_PROXY_FEE_BUDGET_PLANCK : SWEEP_FEE_BUDGET_PLANCK)} liquid per execution and pays about ${formatDot(totalQuotedPlanck)} in total (budget sum ${formatDot(totalBudgetPlanck)})`,
 )
 const referendumCalls = buildReferendumCalls(
 	{ assetHub: offline.assetHub, collectives: offline.collectives },
@@ -414,6 +470,15 @@ writeFileSync(
 			delegateToAdd: AH_SOVEREIGN_PUBKEY_HEX,
 			enactAtBlock: cancelAtBlock ?? null,
 			tasks: summaryTasks,
+			fees: {
+				legs: feeQuotes.map((quote) => ({
+					leg: quote.leg,
+					quotedPlanck: quote.quotedPlanck.toString(),
+					budgetPlanck: quote.budgetPlanck.toString(),
+					executions: quote.executions,
+				})),
+				totalQuotedPlanck: totalQuotedPlanck.toString(),
+			},
 		},
 		null,
 		2,

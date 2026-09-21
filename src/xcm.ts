@@ -67,31 +67,42 @@ export const fungible = (id: XcmLocation, amount: bigint): XcmAsset => ({
 
 export interface TransactParams {
 	readonly feeBudget: bigint
-
 	readonly call: Uint8Array
-
 	readonly fallbackMaxWeight: Weight | undefined
-
 	readonly refundTo: Uint8Array
 }
 
-export function buildTransactXcm(params: TransactParams): XcmV5Instruction[] {
+export interface MultiTransactParams {
+	readonly feeBudget: bigint
+	readonly calls: readonly Uint8Array[]
+	readonly fallbackMaxWeight: Weight | undefined
+	readonly refundTo: Uint8Array
+}
+
+export function buildMultiTransactXcm(params: MultiTransactParams): XcmV5Instruction[] {
 	if (params.feeBudget <= 0n) throw new Error("The fee budget must be positive")
+	if (params.calls.length === 0) throw new Error("At least one call is required")
 	const fee = fungible(DOT_LOCATION, params.feeBudget)
 	return [
 		XcmV5Instruction.WithdrawAsset([fee]),
 		XcmV5Instruction.BuyExecution({ fees: fee, weight_limit: XcmV3WeightLimit.Unlimited() }),
-		XcmV5Instruction.Transact({
-			origin_kind: XcmV2OriginKind.SovereignAccount(),
-			fallback_max_weight: params.fallbackMaxWeight,
-			call: params.call,
-		}),
+		...params.calls.map((call) =>
+			XcmV5Instruction.Transact({
+				origin_kind: XcmV2OriginKind.SovereignAccount(),
+				fallback_max_weight: params.fallbackMaxWeight,
+				call,
+			}),
+		),
 		XcmV5Instruction.RefundSurplus(),
 		XcmV5Instruction.DepositAsset({
 			assets: XcmV5AssetFilter.Wild(XcmV5WildAsset.AllCounted(1)),
 			beneficiary: accountId32Location(params.refundTo),
 		}),
 	]
+}
+
+export function buildTransactXcm(params: TransactParams): XcmV5Instruction[] {
+	return buildMultiTransactXcm({ ...params, calls: [params.call] })
 }
 
 export const versionedXcm = (instructions: XcmV5Instruction[]) => XcmVersionedXcm.V5(instructions)

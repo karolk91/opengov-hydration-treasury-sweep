@@ -148,7 +148,7 @@ jobs:
 
             echo "### Result"
             echo '```'
-            grep -aE "Fellowship referendum #[0-9]+ (created|executed)|Governance referendum #[0-9]+ (created|executed)|BatchCompleted|\[all\]|delegates:|old .* absent=|new .* present=|fired:|already fired|holder drained|treasury gained|Post-referendum test passed|Workflow completed|AssertionError|Error:" e2e.log \
+            grep -aE "Fellowship referendum #[0-9]+ (created|executed)|Governance referendum #[0-9]+ (created|executed)|BatchCompleted|Hydration XCM fees|quoted .* DOT|total over all executions|\[all\]|delegates:|old .* absent=|new .* present=|fired:|already fired|holder drained|treasury gained|Post-referendum test passed|Workflow completed|AssertionError|Error:" e2e.log \
               | grep -avE "building #" | tail -60 || echo "(no result lines — see the uploaded log)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

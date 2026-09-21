@@ -82,8 +82,9 @@ old treasury account; three of them fail on every firing because the Asset Hub s
 proxy delegate of their holder. `src/consolidation.ts` decodes the four live schedules from the
 agenda and builds one Root `Utility.batch_all` that:
 
-1. adds the Asset Hub sovereign as an `Any` proxy delegate on the holders that lack it, through a
-   relay-routed XCM authorized by each holder's existing `Parent` delegate;
+1. adds the Asset Hub sovereign as an `Any` proxy delegate on the holders that lack it: one
+   relay-routed XCM with one `Transact` per holder, authorized by each holder's existing `Parent`
+   delegate;
 2. cancels the four legacy tasks by `(when, index)` — they are unnamed periodic tasks, so this is
    the only handle; `when` is each schedule's first firing at or after the enactment block;
 3. schedules fresh sweeps to the current treasury (`schedule_named_after`, first firing 600 relay
