@@ -38,7 +38,7 @@ export HYD_ENDPOINT="$HYDRATION_WS"
 
 BUILD_ARGS=()
 if [ -n "$ENACT_BLOCK" ]; then
-  BUILD_ARGS+=(--cancel-at-block "$ENACT_BLOCK")
+  BUILD_ARGS+=(--enact-at-block "$ENACT_BLOCK")
 else
   BUILD_ARGS+=(--enact-offset "$ENACT_OFFSET")
 fi
@@ -46,10 +46,10 @@ fi
 BUILD_ARGS+=(--track "$TRACK")
 
 mkdir -p out
-rm -f out/all-*.call out/all-ah-sim.yml out/hyd-reduce.yml
+rm -f out/all-*.call out/hyd-reduce.yml
 echo "== 1. building the consolidation referendum (${BUILD_ARGS[*]}) =="
 npx tsx src/consolidation.ts "${BUILD_ARGS[@]}"
-test -f out/all-ah-sim.yml || { echo "builder did not emit out/all-ah-sim.yml" >&2; exit 1; }
+test -f out/all-submit.call || { echo "builder did not emit out/all-submit.call" >&2; exit 1; }
 
 PREIMAGE="$(tr -d '[:space:]' < out/all-preimage.call)"
 SUBMIT="$(tr -d '[:space:]' < out/all-submit.call)"
@@ -63,7 +63,7 @@ ADDITIONAL="$HYD_ENTRY"
 [ -n "$RELAY_WS" ] && ADDITIONAL="$HYD_ENTRY,$RELAY_WS"
 
 CMD=(node "$PRT_DIR/dist/cli.js" test
-  --governance-chain-url "$(pwd)/out/all-ah-sim.yml"
+  --governance-chain-url "$AH_WS"
   --additional-chains "$ADDITIONAL"
   --call-to-note-preimage-for-governance-referendum "$PREIMAGE"
   --call-to-create-governance-referendum "$SUBMIT"

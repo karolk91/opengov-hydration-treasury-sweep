@@ -227,6 +227,36 @@ export async function fireScheduledTask(assetHub: Chain, taskId: string): Promis
 	throw new Error(`scheduler did not dispatch task ${taskId} after relocation`)
 }
 
+export async function fireAgendaSlot(
+	assetHub: Chain,
+	slot: number,
+): Promise<{ target: number; schedulerEvents: Any[] }> {
+	const items = await assetHub.api.query.Scheduler.Agenda.getValue(slot)
+	if (!Array.isArray(items) || items.length === 0) throw new Error(`agenda slot ${slot} is empty`)
+	const target = Number(
+		await assetHub.api.query.ParachainSystem.LastRelayChainBlockNumber.getValue(),
+	)
+	await setStore(assetHub, {
+		Scheduler: {
+			Agenda: [
+				[[slot], null],
+				[[target], (items as Any[]).map(toStorageAgendaItem)],
+			],
+			IncompleteSince: target,
+		},
+	})
+	for (let attempt = 0; attempt < 3; attempt++) {
+		await build(assetHub)
+		const events = (await assetHub.api.query.System.Events.getValue()) as EventRecord[]
+		const schedulerEvents = events
+			.filter((record) => record.event.type === "Scheduler")
+			.map((record) => record.event.value)
+			.filter((value: Any) => Number(value?.value?.task?.[0]) === target)
+		if (schedulerEvents.length > 0) return { target, schedulerEvents }
+	}
+	throw new Error(`scheduler did not service the relocated agenda slot ${slot}`)
+}
+
 export async function isTaskScheduled(assetHub: Chain, taskId: string): Promise<boolean> {
 	const lookup = await assetHub.api.query.Scheduler.Lookup.getValue(taskId).catch(() => undefined)
 	return lookup !== undefined && lookup !== null

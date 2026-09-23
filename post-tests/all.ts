@@ -11,6 +11,7 @@ import {
 	build,
 	connect,
 	field,
+	fireAgendaSlot,
 	fireScheduledTask,
 	type PostTestContext,
 	setBlockDetails,
@@ -101,28 +102,76 @@ export default async function all(ctx: PostTestContext): Promise<void> {
 			)
 		}
 
-		console.log("\n[all] checking the Asset Hub scheduler")
+		console.log("\n[all] checking the Asset Hub scheduler and the legacy preimages")
 		const entries = await assetHub.api.query.Scheduler.Agenda.getEntries()
-		const legacyHashPrefixes = new Set<string>()
 		const taskIds = new Set<string>()
-		for (const entry of entries)
-			for (const item of (entry.value ?? []) as Any[]) {
-				if (item?.call?.type === "Lookup")
-					legacyHashPrefixes.add(hexWithoutPrefix(item.call.value.hash).slice(0, 8))
+		const legacyEntriesBySlot = new Map<number, Any[]>()
+		for (const entry of entries) {
+			const items = (entry.value ?? []) as Any[]
+			legacyEntriesBySlot.set(Number(entry.keyArgs[0]), items)
+			for (const item of items) {
 				const id = hexWithoutPrefix(field(item, "maybe_id", "maybeId"))
 				if (id) taskIds.add(id)
 			}
+		}
 		for (const task of tasks) {
-			const legacyTaskAbsent = !legacyHashPrefixes.has(String(task.oldPreimagePrefix))
+			const legacyItem = legacyEntriesBySlot.get(Number(task.legacy.slot))?.[
+				Number(task.legacy.index)
+			]
+			const legacyStillInAgenda =
+				legacyItem?.call?.type === "Lookup" &&
+				hexWithoutPrefix(legacyItem.call.value.hash) === hexWithoutPrefix(task.legacy.preimageHash)
+			const preimageBytes = await assetHub.api.query.Preimage.PreimageFor.getValue([
+				task.legacy.preimageHash,
+				Number(task.legacy.preimageLength),
+			])
+			const requestStatus = await assetHub.api.query.Preimage.RequestStatusFor.getValue(
+				task.legacy.preimageHash,
+			)
 			const newTaskPresent = taskIds.has(String(task.newTaskId).replace(/^0x/, ""))
 			console.log(
-				`  #${task.ref}: old ${task.oldPreimagePrefix} absent=${legacyTaskAbsent}, new ${String(task.newTaskId).slice(0, 10)} present=${newTaskPresent}`,
+				`  #${task.ref}: legacy entry at slot ${task.legacy.slot}/${task.legacy.index} present=${legacyStillInAgenda}, preimage bytes present=${preimageBytes !== undefined}, request status=${JSON.stringify(requestStatus) ?? "none"}, new ${String(task.newTaskId).slice(0, 10)} present=${newTaskPresent}`,
 			)
 			assert.ok(
-				legacyTaskAbsent,
-				`#${task.ref}: legacy schedule (${task.oldPreimagePrefix}) was not cancelled`,
+				legacyStillInAgenda,
+				`#${task.ref}: legacy agenda entry missing before its next occurrence`,
 			)
+			assert.equal(preimageBytes, undefined, `#${task.ref}: legacy preimage bytes still present`)
+			assert.equal(requestStatus, undefined, `#${task.ref}: legacy preimage still requested`)
 			assert.ok(newTaskPresent, `#${task.ref}: new sweep task was not scheduled`)
+		}
+
+		console.log("\n[all] driving each legacy occurrence: expect CallUnavailable, no dispatch")
+		const legacySlots = [...new Set(tasks.map((task) => Number(task.legacy.slot)))]
+		for (const slot of legacySlots) {
+			const tasksInSlot = tasks.filter((task) => Number(task.legacy.slot) === slot)
+			const { target, schedulerEvents } = await fireAgendaSlot(assetHub, slot)
+			for (const task of tasksInSlot) {
+				const index = Number(task.legacy.index)
+				const unavailable = schedulerEvents.find(
+					(event: Any) => event.type === "CallUnavailable" && Number(event.value.task[1]) === index,
+				)
+				const dispatched = schedulerEvents.find(
+					(event: Any) => event.type === "Dispatched" && Number(event.value.task[1]) === index,
+				)
+				console.log(
+					`  #${task.ref}: occurrence relocated to ${target}/${index}: CallUnavailable=${unavailable !== undefined}, Dispatched=${dispatched !== undefined}`,
+				)
+				assert.ok(unavailable, `#${task.ref}: legacy occurrence did not report CallUnavailable`)
+				assert.equal(dispatched, undefined, `#${task.ref}: legacy occurrence was dispatched`)
+			}
+			const remaining = await assetHub.api.query.Scheduler.Agenda.getValue(target)
+			const nextOccurrence = await assetHub.api.query.Scheduler.Agenda.getValue(
+				target + Number(tasksInSlot[0]?.legacy.period ?? 0),
+			)
+			assert.ok(
+				!Array.isArray(nextOccurrence) ||
+					nextOccurrence.every((item: Any) => item?.call?.type !== "Lookup"),
+				`legacy task from slot ${slot} was re-scheduled after CallUnavailable`,
+			)
+			console.log(
+				`  slot ${slot}: entry left in agenda at ${target}: ${Array.isArray(remaining) ? remaining.filter(Boolean).length : 0} item(s); no re-schedule at ${target}+period`,
+			)
 		}
 
 		console.log("\n[all] driving the new sweeps, checking drains + treasury")

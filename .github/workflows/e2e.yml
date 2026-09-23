@@ -13,7 +13,7 @@ on:
         type: string
         default: once
       enact_block:
-        description: "Enactment block B for At(B) (empty = auto-pick a valid off-grid block; the dry-run relocates enactment to the current relay head regardless)"
+        description: "Enactment block B for At(B) (empty = auto-pick; the dry-run relocates enactment to the current relay head regardless)"
         type: string
         default: ""
       reduce_chunked_to:
@@ -109,7 +109,7 @@ jobs:
             echo "|---|---|"
             echo "| track | \`${{ inputs.track }}\` |"
             echo "| executions | \`${{ inputs.executions }}\` |"
-            echo "| enact block | \`${{ inputs.enact_block || '(auto off-grid)' }}\` |"
+            echo "| enact block | \`${{ inputs.enact_block || '(auto)' }}\` |"
             echo "| reduce chunked to | \`${{ inputs.reduce_chunked_to || '(live balances)' }}\` |"
             echo "| subway | \`${{ inputs.use_subway }}\` |"
             echo "| prt ref | \`${{ inputs.prt_ref }}\` |"
@@ -120,7 +120,7 @@ jobs:
               echo '```json'
               jq '{track, beneficiary, delegateToAdd, enactAtBlock, sovereignAccountOnHydration,
                    tasks: [.tasks[] | {ref, mode, holder: .holder[0:8], addProxy,
-                                       cancel: {when: .cancel.when, index: .cancel.index},
+                                       legacyPreimage: .legacy.preimageHash[0:10], legacySlot: .legacy.slot,
                                        needed: .plan.needed,
                                        usdt: (.amounts.usdt|tonumber/1e6), usdc: (.amounts.usdc|tonumber/1e6)}]}' \
                 out/summary-all.json
@@ -148,7 +148,7 @@ jobs:
 
             echo "### Result"
             echo '```'
-            grep -aE "Fellowship referendum #[0-9]+ (created|executed)|Governance referendum #[0-9]+ (created|executed)|BatchCompleted|Hydration XCM fees|quoted .* DOT|total over all executions|\[all\]|delegates:|old .* absent=|new .* present=|fired:|already fired|holder drained|treasury gained|Post-referendum test passed|Workflow completed|AssertionError|Error:" e2e.log \
+            grep -aE "Fellowship referendum #[0-9]+ (created|executed)|Governance referendum #[0-9]+ (created|executed)|BatchCompleted|Hydration XCM fees|quoted .* DOT|total over all executions|\[all\]|delegates:|legacy entry|preimage bytes|CallUnavailable=|left in agenda|fired:|already fired|holder drained|treasury gained|Post-referendum test passed|Workflow completed|AssertionError|Error:" e2e.log \
               | grep -avE "building #" | tail -60 || echo "(no result lines — see the uploaded log)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

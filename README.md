@@ -82,40 +82,42 @@ old treasury account; three of them fail on every firing because the Asset Hub s
 proxy delegate of their holder. `src/consolidation.ts` decodes the four live schedules from the
 agenda and builds one Root `Utility.batch_all` that:
 
-1. adds the Asset Hub sovereign as an `Any` proxy delegate on the holders that lack it: one
+1. removes the four legacy tasks' preimages with `Preimage.unnote_preimage(hash)`. The tasks are
+   unnamed periodic `Lookup` tasks whose agenda slots drift (the scheduler re-places a task from the
+   relay block that serviced it, and Asset Hub skips relay blocks), so `Scheduler.cancel(when, index)`
+   cannot target them reliably weeks ahead. Without its preimage a task emits
+   `Scheduler.CallUnavailable` at its next occurrence, dispatches nothing, and is not re-scheduled;
+2. adds the Asset Hub sovereign as an `Any` proxy delegate on the holders that lack it: one
    relay-routed XCM with one `Transact` per holder, authorized by each holder's existing `Parent`
    delegate;
-2. cancels the four legacy tasks by `(when, index)` — they are unnamed periodic tasks, so this is
-   the only handle; `when` is each schedule's first firing at or after the enactment block;
 3. schedules fresh sweeps to the current treasury (`schedule_named_after`, first firing 600 relay
    blocks after enactment so the proxy has propagated): a chunked sweep at ~15% of the egress limit
    for the large holder, a single-shot for the near-drained holders, and only the post-stall
    leftover (`balance mod 5000`) for the holder whose legacy schedule still works.
 
 ```sh
-npm run consolidation -- --cancel-at-block 33512138          # enact At(B): real submission
-npm run consolidation -- --enact-offset 100000               # dry-run: auto-pick an off-grid B
+npm run consolidation -- --enact-at-block 33396685           # enact At(B): real submission
+npm run consolidation -- --enact-offset 100000               # dry-run: B = latest legacy slot + N
 npm run consolidation -- --track whitelisted-caller ...      # also writes the Fellowship calls
 npm run consolidation -- --reduce-chunked 50000 ...          # also writes out/hyd-reduce.yml
 ```
 
 Flags:
 
-- `--cancel-at-block <B>`: relay block of the enactment (`At(B)`). B must be greater than every
-  schedule's current slot and off every schedule's firing grid; the builder rejects other values.
-- `--enact-offset <N>`: pick `B = latest slot + N`, nudged off every grid. For dry-runs.
+- `--enact-at-block <B>`: relay block of the enactment (`At(B)`). `--cancel-at-block` is an alias.
+- `--enact-offset <N>`: `B = latest legacy slot + N`. For dry-runs.
 - `--track root|whitelisted-caller` (default root).
 - `--reduce-chunked <amount>`: write a Hydration Chopsticks override that caps the chunked holder at
   this 6-decimal amount, so a full-drain dry-run finishes in a few executions.
 
-Outputs: `out/all-preimage.call`, `out/all-submit.call`, `out/summary-all.json`,
-`out/all-ah-sim.yml` (with a B: relocates the four legacy tasks to their `when` slots so the
-cancels match in a fork), `out/all-fellowship-submit.call` (+ `-preimage` when needed) for the
-whitelisted track, `out/hyd-reduce.yml` with `--reduce-chunked`.
+Outputs: `out/all-preimage.call`, `out/all-submit.call`, `out/summary-all.json` (tasks, legacy
+preimage hashes and slots, quoted fees), `out/all-fellowship-submit.call` (+ `-preimage` when
+needed) for the whitelisted track, `out/hyd-reduce.yml` with `--reduce-chunked`.
 
-Enactment timing: Referenda enacts at `max(B, approval_block + min_enactment_period)` (Root: ~24 h).
-If approval comes later than `B - 24 h`, enactment slips past the computed `when` slots, every
-cancel returns `NotFound`, and `batch_all` reverts without effect. Submit early enough, or re-pick B.
+Enactment timing: Referenda enacts at `max(B, approval_block + min_enactment_period)`. The batch
+does not depend on the enactment block; B only sets when the new sweeps start. For the #1501
+holder the new sweep moves `balance mod 5000`, which is correct for any B after its legacy schedule
+has moved the last full 5,000 (see `.agent/tools/legacy-1501-finish.ts`).
 
 ## End-to-end testing with polkadot-referenda-tester
 

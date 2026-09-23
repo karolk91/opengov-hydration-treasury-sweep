@@ -8,15 +8,9 @@ import {
 	XcmV5Junctions,
 	XcmVersionedLocation,
 } from "@polkadot-api/descriptors"
-import { getDynamicBuilder, getLookupFn } from "@polkadot-api/metadata-builders"
-import {
-	AccountId,
-	Blake2256,
-	decAnyMetadata,
-	unifyMetadata,
-} from "@polkadot-api/substrate-bindings"
+import { AccountId, Blake2256 } from "@polkadot-api/substrate-bindings"
 import { createClient } from "polkadot-api"
-import { fromHex, toHex } from "polkadot-api/utils"
+import { toHex } from "polkadot-api/utils"
 import { getWsProvider } from "polkadot-api/ws"
 import { siblingSovereignAccount, toSs58 } from "./accounts.ts"
 import { getTreasuryAccount } from "./assetHub.ts"
@@ -49,6 +43,7 @@ interface LegacySchedule {
 	index: number
 	period: number
 	hash: string
+	preimageLength: number
 	usdtBalance: bigint
 	usdcBalance: bigint
 	hasSovereignProxy: boolean
@@ -186,6 +181,7 @@ for (const entry of agendaEntries) {
 			index,
 			period: Number(item.maybe_periodic[0]),
 			hash,
+			preimageLength: length,
 			usdtBalance,
 			usdcBalance,
 			hasSovereignProxy: (delegateHexes as string[]).some((delegateHex) =>
@@ -203,12 +199,12 @@ for (const schedule of schedules)
 if (schedules.length !== 4)
 	throw new Error(`expected 4 legacy schedules, found ${schedules.length}`)
 
-const cancelAtBlock = ((): number | undefined => {
-	const atBlockArg = argValue("--cancel-at-block")
+const enactAtBlock = ((): number | undefined => {
+	const atBlockArg = argValue("--enact-at-block") ?? argValue("--cancel-at-block")
 	if (atBlockArg) {
 		const block = Number(atBlockArg)
-		if (!Number.isInteger(block))
-			throw new Error(`--cancel-at-block: "${atBlockArg}" is not an integer`)
+		if (!Number.isInteger(block) || block <= 0)
+			throw new Error(`--enact-at-block: "${atBlockArg}" is not a positive integer`)
 		return block
 	}
 	const offsetArg = argValue("--enact-offset")
@@ -217,33 +213,15 @@ const cancelAtBlock = ((): number | undefined => {
 		if (!Number.isInteger(offset) || offset <= 0)
 			throw new Error("--enact-offset must be a positive integer")
 		const maxSlot = Math.max(...schedules.map((schedule) => schedule.slot))
-		let block = maxSlot + offset
-		while (schedules.some((schedule) => (block - schedule.slot) % schedule.period === 0)) block++
-		console.log(
-			`--enact-offset ${offset}: enact At(${block}) (maxSlot ${maxSlot} + ${offset}, off-grid)`,
-		)
-		return block
+		console.log(`--enact-offset ${offset}: enact At(${maxSlot + offset})`)
+		return maxSlot + offset
 	}
 	return undefined
 })()
 const enactment =
-	cancelAtBlock === undefined
+	enactAtBlock === undefined
 		? TraitsScheduleDispatchTime.After(10)
-		: TraitsScheduleDispatchTime.At(cancelAtBlock)
-const whenFor = (schedule: LegacySchedule): number => {
-	if (cancelAtBlock === undefined) return schedule.slot
-	if (cancelAtBlock <= schedule.slot)
-		throw new Error(
-			`--cancel-at-block ${cancelAtBlock} must be > slot ${schedule.slot} (#${schedule.ref})`,
-		)
-	if ((cancelAtBlock - schedule.slot) % schedule.period === 0)
-		throw new Error(
-			`--cancel-at-block ${cancelAtBlock} is on #${schedule.ref}'s grid (slot ${schedule.slot} period ${schedule.period}); pick another B`,
-		)
-	return (
-		schedule.slot + schedule.period * Math.ceil((cancelAtBlock - schedule.slot) / schedule.period)
-	)
-}
+		: TraitsScheduleDispatchTime.At(enactAtBlock)
 
 const proposalParamsFor = (holder: string) => ({
 	holder,
@@ -265,7 +243,7 @@ function leftover(schedule: LegacySchedule): [bigint, bigint] {
 	]
 }
 
-const cancelCalls: Any[] = []
+const unnoteCalls: Any[] = []
 const scheduleCalls: Any[] = []
 const summaryTasks: Any[] = []
 const holdersNeedingProxy: string[] = []
@@ -406,13 +384,11 @@ for (const schedule of schedules) {
 			call: proposal.periodic.send.decodedCall,
 		}).decodedCall,
 	)
-	const when = whenFor(schedule)
-	cancelCalls.push(
-		offline.assetHub.tx.Scheduler.cancel({ when, index: schedule.index }).decodedCall,
-	)
+	const preimageHash = toHex(hexToBytes(schedule.hash))
+	unnoteCalls.push(offline.assetHub.tx.Preimage.unnote_preimage({ hash: preimageHash }).decodedCall)
 	if (!schedule.hasSovereignProxy) holdersNeedingProxy.push(schedule.holderSs58)
 	console.log(
-		`  #${schedule.ref} ${schedule.mode}: move ${Number(usdt) / 1e6}+${Number(usdc) / 1e6} in ${plan.needed} exec(s); cancel (when ${when}, idx ${schedule.index})${schedule.hasSovereignProxy ? "" : "; +add-proxy"}; task ${taskId.slice(0, 10)}`,
+		`  #${schedule.ref} ${schedule.mode}: move ${Number(usdt) / 1e6}+${Number(usdc) / 1e6} in ${plan.needed} exec(s); unnote preimage ${preimageHash.slice(0, 10)} (legacy slot ${schedule.slot} idx ${schedule.index})${schedule.hasSovereignProxy ? "" : "; +add-proxy"}; task ${taskId.slice(0, 10)}`,
 	)
 	summaryTasks.push({
 		ref: schedule.ref,
@@ -421,7 +397,13 @@ for (const schedule of schedules) {
 		oldPreimagePrefix: schedule.hash.slice(0, 8),
 		newTaskId: taskId,
 		addProxy: !schedule.hasSovereignProxy,
-		cancel: { when, index: schedule.index, slot: schedule.slot, period: schedule.period },
+		legacy: {
+			preimageHash,
+			preimageLength: schedule.preimageLength,
+			slot: schedule.slot,
+			index: schedule.index,
+			period: schedule.period,
+		},
 		plan: { intervalBlocks: plan.intervalBlocks, needed: plan.needed, scheduled: plan.scheduled },
 		amounts: { usdt: usdt.toString(), usdc: usdc.toString() },
 	})
@@ -430,10 +412,10 @@ for (const schedule of schedules) {
 const addProxySends: Any[] =
 	holdersNeedingProxy.length > 0 ? [(await addProxySendFor(holdersNeedingProxy)).decodedCall] : []
 const batch = offline.assetHub.tx.Utility.batch_all({
-	calls: [...addProxySends, ...cancelCalls, ...scheduleCalls],
+	calls: [...unnoteCalls, ...addProxySends, ...scheduleCalls],
 })
 console.log(
-	`\nbatch_all: ${addProxySends.length} add-proxy (${holdersNeedingProxy.length} holders) + ${cancelCalls.length} cancel + ${scheduleCalls.length} schedule = ${batch.encodedData.length} bytes, hash 0x${toHex(Blake2256(batch.encodedData)).slice(2)}`,
+	`\nbatch_all: ${unnoteCalls.length} unnote-preimage + ${addProxySends.length} add-proxy (${holdersNeedingProxy.length} holders) + ${scheduleCalls.length} schedule = ${batch.encodedData.length} bytes, hash 0x${toHex(Blake2256(batch.encodedData)).slice(2)}`,
 )
 console.log("\nHydration XCM fees (XcmPaymentApi quote at build time; unspent budget is refunded):")
 let totalQuotedPlanck = 0n
@@ -468,7 +450,7 @@ writeFileSync(
 			sovereignAccountOnHydration: sovereign.ss58,
 			beneficiary: toSs58(beneficiaryKey, POLKADOT_SS58_PREFIX),
 			delegateToAdd: AH_SOVEREIGN_PUBKEY_HEX,
-			enactAtBlock: cancelAtBlock ?? null,
+			enactAtBlock: enactAtBlock ?? null,
 			tasks: summaryTasks,
 			fees: {
 				legs: feeQuotes.map((quote) => ({
@@ -511,39 +493,6 @@ if (
 	}
 }
 console.log("wrote out/summary-all.json")
-
-if (cancelAtBlock !== undefined) {
-	const metadataHex = await assetHub.client._request<string, []>("state_getMetadata", [])
-	const agenda = getDynamicBuilder(
-		getLookupFn(unifyMetadata(decAnyMetadata(fromHex(metadataHex)))),
-	).buildStorage("Scheduler", "Agenda")
-	const itemsByWhen = new Map<number, Any[]>()
-	const slotsToClear = new Set<number>()
-	for (const schedule of schedules) {
-		const rawAgenda = await assetHub.client._request<string, [string]>("state_getStorage", [
-			agenda.keys.enc(schedule.slot),
-		])
-		const agendaItems = agenda.value.dec(rawAgenda) as Any[]
-		const when = whenFor(schedule)
-		slotsToClear.add(schedule.slot)
-		slotsToClear.add(schedule.slot + schedule.period)
-		const relocated = itemsByWhen.get(when) ?? []
-		relocated[schedule.index] = agendaItems[schedule.index]
-		itemsByWhen.set(when, relocated)
-	}
-	const lines = ["import-storage:", "  Scheduler:", "    Agenda:"]
-	for (const [when, relocated] of itemsByWhen) {
-		const itemsWithNulls = Array.from(relocated, (item) => item ?? null)
-		lines.push(`      - - [${when}]`, `        - '${toHex(agenda.value.enc(itemsWithNulls))}'`)
-	}
-	for (const slot of slotsToClear)
-		if (!itemsByWhen.has(slot)) lines.push(`      - - [${slot}]`, "        - null")
-	const assetHubEndpoint = process.env.AH_ENDPOINT ?? DEFAULT_ENDPOINTS.assetHub[0]
-	writeFileSync("out/all-ah-sim.yml", [`endpoint: '${assetHubEndpoint}'`, ...lines, ""].join("\n"))
-	console.log(
-		`wrote out/all-ah-sim.yml (relocated ${schedules.length} tasks; endpoint ${assetHubEndpoint})`,
-	)
-}
 
 const reduceChunkedArg = argValue("--reduce-chunked")
 if (reduceChunkedArg) {
